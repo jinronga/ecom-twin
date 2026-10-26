@@ -1,0 +1,161 @@
+"""配置加载：settings.toml（业务配置）+ 环境变量 / .env（密钥）。
+
+密钥只从环境变量或 .env 读取，不写进 settings.toml，也不进入 agent 上下文。
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlsplit
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@dataclass
+class Approver:
+    primary: str
+    delegate: str = ""
+
+
+@dataclass
+class Limits:
+    allowed_shops: list[str] = field(default_factory=list)
+    max_daily_writes_per_shop: int = 50
+    max_publish_items_per_proposal: int = 50
+    min_margin_rate: float = 0.15
+    max_bid_change_pct: float = 30
+    max_price_change_pct: float = 10
+
+
+@dataclass
+class FeishuSettings:
+    owner_open_id: str = ""
+    base_app_token: str = ""
+    tasks_table_id: str = ""
+    steps_table_id: str = ""
+    proposals_table_id: str = ""
+    base_max_writes_per_sec: float = 3
+
+    @property
+    def board_enabled(self) -> bool:
+        return bool(self.base_app_token and self.tasks_table_id)
+
+
+@dataclass
+class RuntimeSettings:
+    default: str = "claude_code"
+    fallback: str = "codex"
+    max_retries_before_switch: int = 2
+    # 本机各 agent CLI 的路径，key 见 runtime/cli_check.py 的 CLI_SPECS；留空则自动查找
+    cli: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class BrowserSettings:
+    enabled: bool = False
+    browser_url: str = "http://127.0.0.1:9222"
+    chrome_path: str = ""
+    user_data_dir: str = ""
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.browser_url)
+        if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+                or parsed.username or parsed.password or parsed.path not in ("", "/")
+                or parsed.query or parsed.fragment):
+            raise ValueError("browser.browser_url 必须是本机 HTTP 调试地址")
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("browser.browser_url 端口无效") from error
+        if port is None or not 1 <= port <= 65535:
+            raise ValueError("browser.browser_url 必须包含有效端口")
+
+
+@dataclass
+class Settings:
+    db_path: Path
+    expire_hours: float = 24
+    remind_before_hours: float = 4
+    approvers: dict[str, Approver] = field(default_factory=dict)
+    limits: Limits = field(default_factory=Limits)
+    feishu: FeishuSettings = field(default_factory=FeishuSettings)
+    runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
+    browser: BrowserSettings = field(default_factory=BrowserSettings)
+
+    def approver_for(self, shop_key: str) -> Approver | None:
+        return self.approvers.get(shop_key)
+
+
+def load_settings(path: str | Path | None = None) -> Settings:
+    path = Path(path) if path else PROJECT_ROOT / "config" / "settings.toml"
+    raw: dict = {}
+    if path.exists():
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+
+    db_path = Path(raw.get("storage", {}).get("db_path", "data/ecom_twin.db"))
+    if not db_path.is_absolute():
+        db_path = PROJECT_ROOT / db_path
+
+    approval = raw.get("approval", {})
+    return Settings(
+        db_path=db_path,
+        expire_hours=approval.get("expire_hours", 24),
+        remind_before_hours=approval.get("remind_before_hours", 4),
+        approvers={k: Approver(**v) for k, v in raw.get("approvers", {}).items()},
+        limits=Limits(**raw.get("limits", {})),
+        feishu=FeishuSettings(**raw.get("feishu", {})),
+        runtime=RuntimeSettings(**raw.get("runtime", {})),
+        browser=BrowserSettings(**raw.get("browser", {})),
+    )
+
+
+def load_dotenv(path: str | Path | None = None) -> None:
+    """极简 .env 解析：只补充进程里还没有的变量，进程环境变量优先。"""
+    path = Path(path) if path else PROJECT_ROOT / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip().strip('"').strip("'")
+        if value:
+            os.environ.setdefault(key.strip(), value)
+
+
+def validate_settings(settings: Settings, runtime_keys: list[str]) -> list[tuple[str, str]]:
+    """配置自检。返回 [(级别, 说明)]，级别为「错误」（会导致功能不可用）或「提醒」。"""
+    issues: list[tuple[str, str]] = []
+    fs, lim, rt = settings.feishu, settings.limits, settings.runtime
+    if not fs.owner_open_id:
+        issues.append(("错误", "feishu.owner_open_id 未填：私聊建单、汇报、无审批人店铺的审批卡片都没有接收人"))
+    if not lim.allowed_shops:
+        issues.append(("错误", "limits.allowed_shops 为空：所有写操作都会被执行器拒绝"))
+    for shop in lim.allowed_shops:
+        if ":" not in shop:
+            issues.append(("错误", f"店铺白名单 {shop} 格式应为「平台:店铺ID」，例如 tiktok:10001"))
+        elif shop not in settings.approvers:
+            issues.append(("提醒", f"店铺 {shop} 没配审批人，审批卡片会发给 owner，且没有代理审批人"))
+    for shop, a in settings.approvers.items():
+        if not a.primary:
+            issues.append(("错误", f"店铺 {shop} 的主审批人为空"))
+        if not a.delegate:
+            issues.append(("提醒", f"店铺 {shop} 没有代理审批人，主审批人不在时提案只能过期"))
+    if not 0 <= lim.min_margin_rate < 1:
+        issues.append(("错误", f"limits.min_margin_rate={lim.min_margin_rate} 应在 0~1 之间"))
+    if fs.base_app_token and not (fs.tasks_table_id and fs.steps_table_id and fs.proposals_table_id):
+        issues.append(("提醒", "多维表格只配了一部分 table_id，没配的表不会同步"))
+    if not fs.base_app_token:
+        issues.append(("提醒", "未配置多维表格：任务看板不会同步，只写本地数据库"))
+    for name, key in (("default", rt.default), ("fallback", rt.fallback)):
+        if key not in runtime_keys:
+            issues.append(("错误", f"runtime.{name}={key} 不是已实现的底座：{', '.join(runtime_keys)}"))
+    if rt.default == rt.fallback:
+        issues.append(("提醒", "默认底座和备选底座相同，失败时没有可切换的底座"))
+    if settings.remind_before_hours >= settings.expire_hours:
+        issues.append(("提醒", "过期提醒时间不小于有效期，提案一提交就会提醒"))
+    return issues

@@ -1,0 +1,14 @@
+# 妙手 OpenAPI 接口路径（配置外置，DESIGN.md 6.5）。
+# 接口以妙手官方文档为准：/Users/jinronga/work/demo/commerce-market-skills/miaoshou/api/
+# 接口调整时只改这里和适配器，不动核心流程。
+
+[paths]
+shop_list = "/open/v1/product/shop/shop/get_shop_list"
+tiktok_search_collect_box = "/open/v1/product/collect_box/tiktok/collect_box/search_collect_box_detail_list"
+tiktok_shop_item_info = "/open/v1/product/collect_box/tiktok/collect_box/get_shop_collect_item_info"
+tiktok_category_tree = "/open/v1/product/collect_box/tiktok/collect_box/get_category_tree_by_site"
+tiktok_category_metadata = "/open/v1/product/collect_box/tiktok/collect_box/get_category_metadata"
+tiktok_claim_to_shop = "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop"
+tiktok_publish = "/open/v1/product/collect_box/tiktok/collect_box/save_move_collect_task"
+common_collect_box_detail = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
+common_collect_box_edit = "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail"
