@@ -9,7 +9,7 @@ from typing import Any
 from .actions import ActionHandler, TiktokPublishViaMiaoshou
 from .approval import ApprovalService
 from .board import BoardSync
-from .config import Settings
+from .config import PROJECT_ROOT, Settings
 from .executor import Executor
 from .feishu import FeishuClient
 from .followups import FollowupService
@@ -57,8 +57,9 @@ def build_app(settings: Settings, store: Store, feishu: FeishuClient, miaoshou: 
     board = BoardSync(store, feishu, settings.feishu)
     tasks = TaskService(store, board)
 
-    # 功能3：初始化 SOP 管理器
-    sop_dirs = getattr(settings, "sop_dirs", None) or ["skills"]
+    # 功能3：初始化 SOP 管理器。优先用 [skills] dirs 配置的目录，
+    # 未配置时回退到项目内置的 skills/ 目录。
+    sop_dirs = [str(d) for d in settings.skill_dirs] or [str(PROJECT_ROOT / "skills")]
     sops = SOPManager(sop_dirs)
 
     def on_change(p: Proposal) -> None:

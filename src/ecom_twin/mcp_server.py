@@ -63,8 +63,13 @@ class ToolServer:
                  "action 目前支持 miaoshou.tiktok.publish；rationale 里的数字必须来自工具返回的数据，否则会被拒收",
                  _obj({"shop_key": s, "action": s, "target": {"type": "object"}, "desired": {"type": "object"},
                        "rationale": s}, ["shop_key", "action", "target", "rationale"]), self._submit_proposal),
-            Tool("report_step", "上报一个关键步骤的进展，会显示在任务看板上。status：进行中 / 成功 / 失败 / 跳过",
-                 _obj({"name": s, "status": s, "summary": s}, ["name", "status"]), self._report_step),
+            Tool("report_step", "上报一个关键步骤的进展，会显示在任务看板上。status：进行中 / 成功 / 失败 / 跳过。"
+                 "evidence 可传证据截图路径（先调用 capture_page 获得）",
+                 _obj({"name": s, "status": s, "summary": s, "evidence": s}, ["name", "status"]),
+                 self._report_step),
+            Tool("capture_page", "只读取证：抓取公开网页的标题、正文和截图。只能打开白名单域名的公开页面，"
+                 "不能点击、不能登录、不能操作卖家后台。截图路径可传给 report_step 作为证据",
+                 _obj({"url": s, "purpose": s}, ["url"]), self._capture_page),
             Tool("load_sop", "加载场景 SOP（标准操作程序）的完整内容作为操作指南。先检查任务初始上下文中的 SOP 清单，再按需调用",
                  _obj({"name": s}, ["name"]), self._load_sop),
             Tool("get_shop_context", "查询店铺背景信息：白名单状态、审批人配置、硬上限数值、ERP信息等",
@@ -113,8 +118,29 @@ class ToolServer:
         status = StepStatus(a["status"])
         step = self.app.tasks.start_step(self.task_id, a["name"])
         if status != StepStatus.RUNNING:
-            self.app.tasks.finish_step(step, status, summary=a.get("summary", ""))
+            self.app.tasks.finish_step(step, status, summary=a.get("summary", ""),
+                                       evidence=a.get("evidence", ""))
         return {"ok": True}
+
+    def _capture_page(self, a):
+        """只读网页取证：抓取公开页面的标题、正文和截图。"""
+        from .browser import BrowserError, capture_page
+        from .evidence import EVIDENCE_ROOT
+
+        url = a["url"]
+        try:
+            capture = capture_page(url, EVIDENCE_ROOT / self.task_id, self.app.settings.browser)
+        except BrowserError as error:
+            return {"ok": False, "error": str(error)}
+
+        return {
+            "ok": True,
+            "url": capture.url,
+            "title": capture.title,
+            "text": capture.text,
+            "screenshot": str(capture.screenshot),
+            "说明": "截图已保存到任务证据目录，可传给 report_step 的 evidence 参数",
+        }
 
     def _load_sop(self, a):
         """加载 SOP 完整内容"""
@@ -226,7 +252,12 @@ class ToolServer:
             result = tool.fn(arguments or {})
         except (AdapterError, ProposalRejected, KeyError, ValueError) as e:
             return f"{type(e).__name__}: {e}", True
-        self.app.tasks.heartbeat(self.task_id)
+        except Exception as e:  # 工具异常不应让整个 MCP server 退出
+            return f"{type(e).__name__}: {e}", True
+        try:
+            self.app.tasks.heartbeat(self.task_id)
+        except Exception:
+            pass
         return (result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)), False
 
     def handle(self, msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -280,8 +311,8 @@ def tool_names() -> list[str]:
     """供运行时设置允许的工具清单。"""
     return ["miaoshou_list_shops", "miaoshou_search_collect_box", "miaoshou_get_collect_item",
             "miaoshou_tiktok_category_tree", "miaoshou_tiktok_category_metadata", "price_skus",
-            "submit_proposal", "report_step", "load_sop", "get_shop_context", "recall_memory",
-            "propose_memory", "ask_owner",
+            "submit_proposal", "report_step", "capture_page", "load_sop", "get_shop_context",
+            "recall_memory", "propose_memory", "ask_owner",
             "feishu_get_message", "feishu_chat_messages", "feishu_thread_messages", "feishu_search_messages"]
 
 

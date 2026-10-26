@@ -61,3 +61,22 @@ enabled = false
 browser_url = "http://127.0.0.1:9222"
 chrome_path = ""
 user_data_dir = ""
+
+# 功能5：只读网页取证。agent 用 capture_page 打开公开页面截图取证，
+# 只能「看」不能「点」——不登录、不填表、不操作卖家后台。
+# 只允许打开这些域名（含子域名）的公开页面
+allowed_domains = [
+  "amazon.com", "amazon.co.uk", "amazon.de", "amazon.co.jp", "amazon.ae", "amazon.sa",
+  "tiktok.com", "noon.com", "1688.com", "aliexpress.com", "shopee.com", "lazada.com",
+]
+# URL 里出现这些词一律拒绝：卖家后台、登录、结算等
+blocked_keywords = [
+  "sellercentral", "seller.", "seller-", "partner", "login", "signin", "account",
+  "checkout", "cart", "settle", "withdraw",
+]
+timeout_sec = 45.0
+
+# 功能3：场景 SOP（skill）所在目录列表。同名 SOP 取第一个目录的。
+# 未配置时默认使用项目内置的 skills/ 目录。
+[skills]
+dirs = []

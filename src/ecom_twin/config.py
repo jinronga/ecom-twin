@@ -59,6 +59,17 @@ class BrowserSettings:
     browser_url: str = "http://127.0.0.1:9222"
     chrome_path: str = ""
     user_data_dir: str = ""
+    # 功能5：只读网页取证的域名白名单（含子域名）
+    allowed_domains: list[str] = field(default_factory=lambda: [
+        "amazon.com", "amazon.co.uk", "amazon.de", "amazon.co.jp", "amazon.ae", "amazon.sa",
+        "tiktok.com", "noon.com", "1688.com", "aliexpress.com", "shopee.com", "lazada.com",
+    ])
+    # URL 里出现这些词一律拒绝：卖家后台、登录、结算等
+    blocked_keywords: list[str] = field(default_factory=lambda: [
+        "sellercentral", "seller.", "seller-", "partner", "login", "signin", "account",
+        "checkout", "cart", "settle", "withdraw",
+    ])
+    timeout_sec: float = 45.0
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.browser_url)
@@ -84,6 +95,8 @@ class Settings:
     feishu: FeishuSettings = field(default_factory=FeishuSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)
     browser: BrowserSettings = field(default_factory=BrowserSettings)
+    # 功能3：场景 SOP（skill）所在目录，agent 按场景动态加载。同名 SOP 取第一个目录的。
+    skill_dirs: list[Path] = field(default_factory=list)
 
     def approver_for(self, shop_key: str) -> Approver | None:
         return self.approvers.get(shop_key)
@@ -109,6 +122,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         feishu=FeishuSettings(**raw.get("feishu", {})),
         runtime=RuntimeSettings(**raw.get("runtime", {})),
         browser=BrowserSettings(**raw.get("browser", {})),
+        skill_dirs=[Path(os.path.expanduser(d)) for d in raw.get("skills", {}).get("dirs", [])],
     )
 
 
