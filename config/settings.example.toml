@@ -1,0 +1,63 @@
+# 复制为 config/settings.toml 后按实际情况修改。
+# 设计文档：硬上限由执行器代码强制，agent 不可改（DESIGN.md 7.4）。
+
+[storage]
+db_path = "data/ecom_twin.db"
+
+[approval]
+# 提案默认有效期（小时）
+expire_hours = 24
+# 过期前多久提醒（小时）
+remind_before_hours = 4
+
+# 每个店铺的主审批人和代理审批人（飞书 open_id）。key 为 "平台:店铺ID"
+[approvers."tiktok:10001"]
+primary = "ou_xxx"
+delegate = "ou_yyy"
+
+[limits]
+# 可操作的店铺白名单，key 为 "平台:店铺ID"。为空则拒绝所有写操作
+allowed_shops = ["tiktok:10001"]
+# 单店每日写操作次数上限
+max_daily_writes_per_shop = 50
+# 单个上品提案最多包含的商品数
+max_publish_items_per_proposal = 50
+# 上品时每个 SKU 的最低毛利率
+min_margin_rate = 0.15
+# 广告调价单次幅度上限（百分比）
+max_bid_change_pct = 30
+# 改价单次幅度上限（百分比）
+max_price_change_pct = 10
+
+[feishu]
+# 汇报和审批卡片默认发给谁（open_id）
+owner_open_id = "ou_xxx"
+# 多维表格（任务看板）。不填则只写本地数据库，不同步看板
+base_app_token = ""
+tasks_table_id = ""
+steps_table_id = ""
+proposals_table_id = ""
+# 每秒最多写入多维表格的次数（节流）
+base_max_writes_per_sec = 3
+
+[runtime]
+# 默认底座：claude_code | codex
+default = "claude_code"
+fallback = "codex"
+max_retries_before_switch = 2
+
+# 本机 agent CLI 路径。以这里填的为准；留空则在 PATH 和常见安装位置自动查找。
+# 用 `ecom-twin runtimes` 验证（运行 --version）。
+[runtime.cli]
+claude_code = ""   # 例：/Users/you/.local/bin/claude
+codex = ""         # 例：/opt/homebrew/bin/codex
+cursor = ""        # 填 cursor-agent（或 agent）的路径，不要填 Cursor IDE 的 cursor 启动器
+opencode = ""      # 例：/Users/you/.opencode/bin/opencode
+
+# 可选：给 Agent 使用的隔离 Chrome DevTools MCP。先运行
+# `ecom-twin browser start`，并在专用 Chrome 中完成登录。
+[browser]
+enabled = false
+browser_url = "http://127.0.0.1:9222"
+chrome_path = ""
+user_data_dir = ""
