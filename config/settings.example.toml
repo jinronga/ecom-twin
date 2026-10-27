@@ -80,3 +80,14 @@ timeout_sec = 45.0
 # 未配置时默认使用项目内置的 skills/ 目录。
 [skills]
 dirs = []
+
+# 功能6：内部平台浏览器操作（需先安装 playwright：uv pip install playwright && uv run playwright install chromium）。
+# agent 不能直接登录或点击按钮（提案审批制），但能提交浏览器流程提案，审批通过后由执行器统一操作。
+# 每个平台一个会话目录，通过 `ecom-twin browser-login <key>` 手工登录后，agent 就能读取该平台已登录页面的内容并提交操作提案。
+# 示例（OA 审批平台）：
+# [platforms.oa]
+# name = "内部 OA 审批"
+# base_url = "https://oa.example.com"
+# login_url = "https://oa.example.com/login"
+# is_store_backend = false
+

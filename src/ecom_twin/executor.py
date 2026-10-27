@@ -29,7 +29,8 @@ class ExecutionOutcome:
 def check_common_limits(proposal: Proposal, limits: Limits, store: Store, now: datetime) -> list[str]:
     """所有写操作通用的硬上限：店铺白名单、单店每日写操作次数。"""
     violations = []
-    if proposal.shop_key not in limits.allowed_shops:
+    # 内部平台（platform:<key>）的白名单是 [platforms] 配置本身，由 BrowserFlow.check_limits 检查
+    if not proposal.shop_key.startswith("platform:") and proposal.shop_key not in limits.allowed_shops:
         violations.append(f"店铺 {proposal.shop_key} 不在可操作白名单内")
     since = now.replace(hour=0, minute=0, second=0, microsecond=0)
     used = store.count_writes_since(proposal.shop_key, since)

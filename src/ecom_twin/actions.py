@@ -134,3 +134,104 @@ class TiktokPublishViaMiaoshou:
                 break
         missing = sorted(wanted - found)
         return (not missing, "全部已发布" if not missing else f"尚未在已发布列表中：{', '.join(missing)}")
+
+
+class BrowserFlow:
+    """在内部平台（海外仓、OA 审批等）上回放一串浏览器操作。
+
+    agent 只负责把流程写成 steps 并提交提案；真正点击、提交由执行器在审批通过后执行。
+    卖货店铺后台不在此列（DESIGN.md 13.1）。
+
+    target = {
+        "title": "提交 3 个 SKU 的入库预报",
+        "start_url": "/inbound/new",                  # 相对平台 base_url 或完整 URL
+        "steps": [{"op": "fill", "label": "SKU", "value": "A-01"}, ..., {"op": "click", "text": "提交", "submit": true}],
+        "expect_text": "提交成功",                    # 执行后页面必须出现这段文字才算成功
+    }
+    """
+
+    action = "browser.flow"
+    method = ExecMethod.API
+
+    def __init__(self, settings: Any, browser_factory: Any, evidence_root: Any):
+        self.settings = settings
+        self.browser_factory = browser_factory  # (PlatformSettings) -> PlatformBrowser
+        self.evidence_root = evidence_root
+
+    def _platform(self, proposal: Proposal):
+        from .platform_browser import PlatformError
+        prefix, _, key = proposal.shop_key.partition(":")
+        platform = self.settings.platforms.get(key) if prefix == "platform" else None
+        if platform is None:
+            raise PlatformError(f"{proposal.shop_key} 不是已配置的内部平台（格式 platform:<key>）")
+        return platform
+
+    def prepare(self, proposal: Proposal) -> None:
+        from .platform_browser import describe_step
+        platform = self._platform(proposal)
+        steps = proposal.target.get("steps", [])
+        proposal.evidence = {
+            "平台": f"{platform.name}（{platform.base_url}）",
+            "流程": proposal.target.get("title", ""),
+            "起始页面": proposal.target.get("start_url", ""),
+            "操作步骤": [f"{i}. {describe_step(s)}" for i, s in enumerate(steps, 1)],
+            "完成标志": f"页面出现「{proposal.target.get('expect_text', '')}」",
+        }
+        submits = sum(1 for s in steps if s.get("submit"))
+        proposal.consequences = {
+            "会做什么": f"在 {platform.name} 上按顺序执行 {len(steps)} 步，其中 {submits} 步是提交",
+            "花费": "浏览器操作本身不产生费用；流程内容（如入库、采购）的费用以平台为准",
+            "能否撤销": platform.revert_hint,
+            "不批准": "不在平台上做任何操作",
+            "留痕": "执行器会在提交前、执行后各截一张图",
+        }
+        proposal.risk = platform.risk
+
+    def check_limits(self, proposal: Proposal, limits: Limits) -> list[str]:
+        from .platform_browser import PlatformError, check_url, validate_steps
+        try:
+            platform = self._platform(proposal)
+        except PlatformError as e:
+            return [str(e)]
+        problems = validate_steps(platform, proposal.target.get("steps", []))
+        try:
+            check_url(platform, proposal.target.get("start_url") or platform.base_url)
+        except PlatformError as e:
+            problems.append(f"起始页面：{e}")
+        if not proposal.target.get("expect_text"):
+            problems.append("缺少 expect_text：执行后要靠它确认流程真的成功")
+        if not any(s.get("submit") for s in proposal.target.get("steps", [])):
+            problems.append("没有标记哪一步是提交（submit: true），审批人无法判断哪一步会生效")
+        return problems
+
+    def snapshot(self, proposal: Proposal) -> dict[str, Any]:
+        from .platform_browser import PlatformLoginRequired
+        browser = self.browser_factory(self._platform(proposal))
+        try:
+            page = browser.open_page(proposal.target.get("start_url") or browser.platform.base_url)
+            return {"logged_in": True, "title": page.title}
+        except PlatformLoginRequired as e:
+            return {"logged_in": False, "error": str(e)}
+
+    def drifted(self, proposal: Proposal, snapshot: dict[str, Any]) -> list[str]:
+        return [] if snapshot.get("logged_in") else [snapshot.get("error", "平台登录已失效")]
+
+    def apply(self, proposal: Proposal) -> tuple[dict[str, Any], Any]:
+        from .adapters.base import AdapterError, ErrorCategory
+        from .platform_browser import PlatformError
+        platform = self._platform(proposal)
+        browser = self.browser_factory(platform)
+        try:
+            response = browser.run_steps(proposal.target.get("start_url") or platform.base_url,
+                                         proposal.target["steps"], self.evidence_root / proposal.id)
+        except PlatformError as e:
+            raise AdapterError(ErrorCategory.INVALID, "browserFlowFailed", str(e)) from e
+        except Exception as e:  # noqa: BLE001 —— 页面元素找不到、超时等统一按执行失败处理
+            raise AdapterError(ErrorCategory.UPSTREAM, "browserFlowError", f"{type(e).__name__}: {e}") from e
+        return {"steps": proposal.target["steps"]}, response
+
+    def verify(self, proposal: Proposal, response: Any) -> bool:
+        return proposal.target.get("expect_text", "\0") in (response or {}).get("final_text", "")
+
+    def rollback(self, proposal: Proposal, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        return None  # 浏览器流程无法自动撤回，按 revert_hint 人工处理

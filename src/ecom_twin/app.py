@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from .actions import ActionHandler, TiktokPublishViaMiaoshou
+from .actions import ActionHandler, BrowserFlow, TiktokPublishViaMiaoshou
 from .approval import ApprovalService
 from .board import BoardSync
 from .config import PROJECT_ROOT, Settings
+from .evidence import EVIDENCE_ROOT
 from .executor import Executor
 from .feishu import FeishuClient
 from .followups import FollowupService
@@ -53,6 +54,16 @@ def build_app(settings: Settings, store: Store, feishu: FeishuClient, miaoshou: 
     if miaoshou is not None:
         h = TiktokPublishViaMiaoshou(miaoshou)
         handlers[h.action] = h
+
+    # 功能6：内部平台浏览器流程。browser_factory 让执行器和 MCP server
+    # 用同一套浏览器资料目录（也就是同一份登录状态）。
+    if settings.platforms:
+        def browser_factory(platform):
+            from .platform_browser import PlatformBrowser
+            return PlatformBrowser(platform, chrome_path=settings.browser.chrome_path)
+
+        flow = BrowserFlow(settings, browser_factory, EVIDENCE_ROOT)
+        handlers[flow.action] = flow
 
     board = BoardSync(store, feishu, settings.feishu)
     tasks = TaskService(store, board)
