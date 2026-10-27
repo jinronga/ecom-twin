@@ -384,6 +384,38 @@ class _FakeMiaoshou:
         return None
 
 
+def cmd_browser_login(args: argparse.Namespace) -> int:
+    """启动内部平台登录浏览器并等待用户手工登录（保存登录状态）。"""
+    from .platform_browser import PlatformBrowser
+
+    settings = load_settings()
+    platform = settings.platforms.get(args.platform)
+    if platform is None:
+        print(f"错误：没有名为 {args.platform} 的平台，可用：{', '.join(settings.platforms) or '（无）'}")
+        return 1
+
+    browser = PlatformBrowser(platform, chrome_path=settings.browser.chrome_path)
+    print(f"平台：{platform.name} ({platform.key})")
+    print(f"用户目录：{browser.user_dir}")
+    print(f"打开 {platform.base_url}，手工登录完成后按 Ctrl+C 退出，登录状态会自动保存")
+    print("")
+    print(f"启动浏览器中...")
+    browser.launch()
+    url = platform.login_url if platform.login_url else platform.base_url
+    try:
+        import playwright.sync_api
+        browser.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        print(f"浏览器已打开：{url}（会话不超时）")
+        import time
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        print("\n登录会话已保存")
+    finally:
+        browser.close()
+    return 0
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     from .config import Approver, Limits, Settings
 
@@ -494,6 +526,9 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--user-data-dir", default="")
     start.add_argument("--url", default="about:blank")
     start.set_defaults(func=cmd_browser)
+    bl = sub.add_parser("browser-login", help="启动内部平台浏览器并打开登录页，保存登录状态后按 Ctrl+C 退出")
+    bl.add_argument("platform", help="平台 key，对应 settings.toml [platforms.<key>]")
+    bl.set_defaults(func=cmd_browser_login)
     r = sub.add_parser("runtimes")
     r.add_argument("--path", action="append", help="临时指定路径试验证，例如 --path cursor=/path/to/cursor-agent")
     r.add_argument("--json", action="store_true")

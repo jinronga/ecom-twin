@@ -85,6 +85,39 @@ class BrowserSettings:
             raise ValueError("browser.browser_url 必须包含有效端口")
 
 
+# 卖货店铺后台：永远不允许分身用浏览器操作（DESIGN.md 13.1 账号风控）
+STORE_BACKEND_MARKERS = (
+    "sellercentral", "seller.tiktok", "seller-us.tiktok", "seller-uk.tiktok", "partner.tiktokshop",
+    "seller.noon", "partner.noon", "noon.partners", "sellercenter", "seller.shopee", "seller.lazada", "seller.walmart",
+)
+
+
+def is_store_backend(text: str) -> bool:
+    """判断一段 URL 或域名是不是卖货店铺后台。"""
+    text = (text or "").lower()
+    return any(marker in text for marker in STORE_BACKEND_MARKERS)
+
+
+@dataclass
+class PlatformSettings:
+    """可以由分身用浏览器操作的内部平台（海外仓、OA 审批等），不包括卖货店铺后台。"""
+    key: str
+    name: str
+    base_url: str
+    login_url: str | None = None  # 手工登录时打开的 URL；未配置时打开 base_url
+    allowed_domains: list[str] = field(default_factory=list)
+    # 跳转后 URL 含这些词，视为登录已失效
+    login_url_keywords: list[str] = field(default_factory=lambda: ["login", "signin", "sso", "passport"])
+    risk: str = "中"
+    max_steps: int = 30
+    # 写在审批卡片「能否撤销」里，例如「入库单提交后 2 小时内可在 WMS 里作废」
+    revert_hint: str = "取决于平台，通常需要人工在平台上撤回或作废"
+
+    def __post_init__(self) -> None:
+        if is_store_backend(self.base_url):
+            raise ValueError(f"平台 {self.key} 的地址看起来是卖货店铺后台，不允许配置成可操作平台")
+
+
 @dataclass
 class Settings:
     db_path: Path
@@ -97,6 +130,8 @@ class Settings:
     browser: BrowserSettings = field(default_factory=BrowserSettings)
     # 功能3：场景 SOP（skill）所在目录，agent 按场景动态加载。同名 SOP 取第一个目录的。
     skill_dirs: list[Path] = field(default_factory=list)
+    # 功能6：可以用浏览器操作的内部平台（海外仓、OA 审批等），不含卖货店铺后台
+    platforms: dict[str, PlatformSettings] = field(default_factory=dict)
 
     def approver_for(self, shop_key: str) -> Approver | None:
         return self.approvers.get(shop_key)
@@ -123,6 +158,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
         runtime=RuntimeSettings(**raw.get("runtime", {})),
         browser=BrowserSettings(**raw.get("browser", {})),
         skill_dirs=[Path(os.path.expanduser(d)) for d in raw.get("skills", {}).get("dirs", [])],
+        platforms={k: PlatformSettings(key=k, **v) for k, v in raw.get("platforms", {}).items()},
     )
 
 

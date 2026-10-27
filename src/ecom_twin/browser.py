@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .config import BrowserSettings
+from .config import BrowserSettings, is_store_backend
 
 CHROME_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -28,12 +28,6 @@ CHROME_CANDIDATES = (
 )
 _TAGS = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>|<[^>]+>", re.S | re.I)
 _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
-
-# 卖货店铺后台：永远不允许访问（DESIGN.md 13.1 账号风控）
-STORE_BACKEND_MARKERS = (
-    "sellercentral", "seller.tiktok", "seller-us.tiktok", "seller-uk.tiktok", "partner.tiktokshop",
-    "seller.noon", "noon.partners", "sellercenter", "seller.shopee", "seller.lazada", "seller.walmart",
-)
 
 
 class BrowserError(ValueError):
@@ -70,7 +64,7 @@ def check_url(url: str, settings: BrowserSettings) -> str:
     if hit:
         raise BrowserError(f"拒绝打开：URL 含「{hit}」，卖家后台、登录、结算等页面不允许分身访问")
     # 双重保险：店铺后台域名无论配置如何都拒绝
-    if any(marker in host for marker in STORE_BACKEND_MARKERS):
+    if is_store_backend(host):
         raise BrowserError(f"拒绝打开：{host} 是卖货店铺后台，分身不允许访问")
     return url
 

@@ -60,7 +60,9 @@ class ToolServer:
                  _obj({"params": {"type": "object"}, "skus": arr}, ["params", "skus"]), self._price_skus),
             Tool("submit_proposal",
                  "提交写操作提案（唯一的写出口）。提交后推送审批卡片，审批通过才执行。"
-                 "action 目前支持 miaoshou.tiktok.publish；rationale 里的数字必须来自工具返回的数据，否则会被拒收",
+                 "action 支持 miaoshou.tiktok.publish（shop_key 如 tiktok:10001）和 browser.flow"
+                 "（shop_key 写 platform:<平台 key>，target 里写 start_url、steps、expect_text）；"
+                 "rationale 里的数字必须来自工具返回的数据，否则会被拒收",
                  _obj({"shop_key": s, "action": s, "target": {"type": "object"}, "desired": {"type": "object"},
                        "rationale": s}, ["shop_key", "action", "target", "rationale"]), self._submit_proposal),
             Tool("report_step", "上报一个关键步骤的进展，会显示在任务看板上。status：进行中 / 成功 / 失败 / 跳过。"
@@ -70,6 +72,12 @@ class ToolServer:
             Tool("capture_page", "只读取证：抓取公开网页的标题、正文和截图。只能打开白名单域名的公开页面，"
                  "不能点击、不能登录、不能操作卖家后台。截图路径可传给 report_step 作为证据",
                  _obj({"url": s, "purpose": s}, ["url"]), self._capture_page),
+            Tool("platform_list", "列出可以用浏览器操作的内部平台（海外仓、OA 审批等）。卖货店铺后台不在其中",
+                 _obj({}), self._platform_list),
+            Tool("platform_open", "只读：在内部平台的登录会话里打开页面，返回页面文字、可跳转的链接、表单字段、按钮和截图。"
+                 "不点击、不填写。要填表或提交流程，改成 browser.flow 提案（shop_key 写 platform:<平台 key>），"
+                 "审批通过后由执行器操作",
+                 _obj({"platform": s, "url": s}, ["platform"]), self._platform_open),
             Tool("load_sop", "加载场景 SOP（标准操作程序）的完整内容作为操作指南。先检查任务初始上下文中的 SOP 清单，再按需调用",
                  _obj({"name": s}, ["name"]), self._load_sop),
             Tool("get_shop_context", "查询店铺背景信息：白名单状态、审批人配置、硬上限数值、ERP信息等",
@@ -140,6 +148,43 @@ class ToolServer:
             "text": capture.text,
             "screenshot": str(capture.screenshot),
             "说明": "截图已保存到任务证据目录，可传给 report_step 的 evidence 参数",
+        }
+
+    def _platform_list(self, a):
+        """列出可操作的内部平台。"""
+        return [{"key": p.key, "name": p.name, "base_url": p.base_url}
+                for p in self.app.settings.platforms.values()] or \
+            "还没有配置内部平台。请在 settings.toml 的 [platforms.<key>] 里配置（例如海外仓、OA 审批）"
+
+    def _platform_open(self, a):
+        """只读：打开内部平台页面并读取内容。"""
+        from .evidence import EVIDENCE_ROOT
+        from .platform_browser import PlatformBrowser, PlatformError
+
+        platform = self.app.settings.platforms.get(a["platform"])
+        if platform is None:
+            return {"ok": False,
+                    "error": f"没有名为 {a['platform']} 的平台，可用：{', '.join(self.app.settings.platforms) or '（无）'}"}
+        # 和执行器用同一套浏览器资料（也就是同一份登录状态）
+        flow = self.app.handlers.get("browser.flow")
+        browser = flow.browser_factory(platform) if flow else PlatformBrowser(
+            platform, chrome_path=self.app.settings.browser.chrome_path)
+        self.app.tasks.start_step(self.task_id, f"浏览 {platform.name}")
+        try:
+            snap = browser.open_page(a.get("url") or platform.base_url, EVIDENCE_ROOT / self.task_id)
+        except PlatformError as error:
+            return {"ok": False, "error": str(error)}
+        return {
+            "ok": True,
+            "platform": platform.key,
+            "url": snap.url,
+            "title": snap.title,
+            "text": snap.text,
+            "links": snap.links,
+            "fields": snap.fields,
+            "buttons": snap.buttons,
+            "screenshot": snap.screenshot,
+            "说明": "只读，没有点击或填写任何内容。要操作请提交 browser.flow 提案",
         }
 
     def _load_sop(self, a):
@@ -311,8 +356,8 @@ def tool_names() -> list[str]:
     """供运行时设置允许的工具清单。"""
     return ["miaoshou_list_shops", "miaoshou_search_collect_box", "miaoshou_get_collect_item",
             "miaoshou_tiktok_category_tree", "miaoshou_tiktok_category_metadata", "price_skus",
-            "submit_proposal", "report_step", "capture_page", "load_sop", "get_shop_context",
-            "recall_memory", "propose_memory", "ask_owner",
+            "submit_proposal", "report_step", "capture_page", "platform_list", "platform_open",
+            "load_sop", "get_shop_context", "recall_memory", "propose_memory", "ask_owner",
             "feishu_get_message", "feishu_chat_messages", "feishu_thread_messages", "feishu_search_messages"]
 
 
