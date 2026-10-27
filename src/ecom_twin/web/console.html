@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>运营分身控制台</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1f2328; --muted: #656d76; --line: #d8dee4;
+    --accent: #0969da; --accent-weak: #ddf4ff; --danger: #cf222e; --ok: #1a7f37; --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #8d96a0; --line: #30363d;
+      --accent: #4493f8; --accent-weak: #121d2f; --danger: #f85149; --ok: #3fb950; --warn: #d29922;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 24px; padding: 12px 24px; background: var(--panel);
+           border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; }
+  header h1 { font-size: 16px; margin: 0; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  nav button { background: none; border: none; padding: 6px 12px; border-radius: 6px; color: var(--muted);
+               font: inherit; cursor: pointer; }
+  nav button.active { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+  nav .badge { background: var(--danger); color: #fff; border-radius: 10px; padding: 0 6px; font-size: 12px;
+               margin-left: 4px; }
+  main { padding: 20px 24px; max-width: 1280px; margin: 0 auto; }
+  .hint { color: var(--muted); margin: 0 0 16px; }
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } header { flex-wrap: wrap; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .list { padding: 8px; max-height: 72vh; overflow: auto; }
+  .list input[type=search] { width: 100%; margin-bottom: 8px; }
+  .item { padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+  .item:hover { background: var(--bg); }
+  .item.active { background: var(--accent-weak); }
+  .item .name { font-weight: 600; }
+  .item .desc { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  label small { font-weight: 400; color: var(--muted); }
+  label > input, label > select, label > textarea { margin-top: 4px; font-weight: 400; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px;
+                            background: var(--panel); color: var(--text); font: inherit; }
+  textarea { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .spacer { flex: 1; }
+  button.btn { border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 6px 14px;
+               border-radius: 6px; font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  .tag { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px; background: var(--bg);
+         border: 1px solid var(--line); color: var(--muted); }
+  .drafts { display: grid; gap: 16px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; }
+  pre { white-space: pre-wrap; margin: 0; font-size: 13px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  #toast { position: fixed; right: 20px; bottom: 20px; padding: 10px 16px; border-radius: 6px; color: #fff;
+           background: var(--ok); display: none; max-width: 60vw; }
+  #toast.error { background: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <h1>运营分身控制台</h1>
+  <nav id="tabs">
+    <button data-tab="memories" class="active">记忆库</button>
+    <button data-tab="drafts">记忆草稿<span id="draftCount" class="badge" hidden></span></button>
+    <button data-tab="recalls">召回记录</button>
+    <button data-tab="audit">变更记录</button>
+  </nav>
+</header>
+<main>
+  <section id="memories">
+    <p class="hint">人工精炼的经验和判断。agent 开局只看到名称和一句话描述（索引），需要时按关键词召回正文。
+      客观事实（当前出价、库存）不放这里；固定步骤的 SOP 放 skill。</p>
+    <div class="layout">
+      <div class="card list">
+        <input type="search" id="memSearch" aria-label="搜索记忆" placeholder="搜索名称、描述、正文">
+        <button class="btn" id="newMem" style="width:100%;margin-bottom:8px">+ 新建记忆</button>
+        <div id="memList"></div>
+      </div>
+      <div class="card">
+        <form id="memForm">
+          <label for="mName">名称</label>
+          <input id="mName" maxlength="80" required>
+          <label for="mDesc">一句话描述 <small>出现在开局索引里，写清「什么时候该用这条」</small></label>
+          <input id="mDesc" maxlength="200" required>
+          <label for="mType">类型</label>
+          <select id="mType"></select>
+          <label for="mBody">正文 <small>Markdown</small></label>
+          <textarea id="mBody"></textarea>
+          <div class="row">
+            <span class="meta" id="mInfo"></span>
+            <span class="spacer"></span>
+            <button type="button" class="btn danger" id="delMem">删除</button>
+            <button type="submit" class="btn primary">保存</button>
+          </div>
+        </form>
+        <details style="margin-top:16px">
+          <summary class="meta">查看 agent 开局看到的记忆索引</summary>
+          <pre id="indexPreview" style="margin-top:8px"></pre>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="drafts" hidden>
+    <p class="hint">agent 在任务中发现记忆缺失或过时时提交的草稿，以及每周的审批拒绝复盘。可以先修改再采纳；同名记忆会被更新。</p>
+    <div class="row" style="margin:0 0 16px">
+      <select id="draftStatus" aria-label="草稿状态" style="width:auto">
+        <option>待审核</option><option>已采纳</option><option>已驳回</option>
+      </select>
+    </div>
+    <div class="drafts" id="draftList"></div>
+  </section>
+
+  <section id="recalls" hidden>
+    <p class="hint">每次 agent 召回记忆都会记录：用了什么关键词、命中了哪些记忆。命中为空说明记忆库缺内容或描述写得不好找。</p>
+    <div class="row" style="margin:0 0 16px">
+      <input id="recallTask" aria-label="按任务号筛选" placeholder="按任务号筛选，例如 T-0003" style="max-width:280px">
+      <button class="btn" id="recallFilter">筛选</button>
+    </div>
+    <div class="card"><table><thead><tr><th>时间</th><th>任务</th><th>关键词</th><th>命中</th></tr></thead>
+      <tbody id="recallRows"></tbody></table></div>
+  </section>
+
+  <section id="audit" hidden>
+    <p class="hint">记忆和记忆草稿的所有改动：谁、什么时候、做了什么。</p>
+    <div class="card"><table><thead><tr><th>时间</th><th>对象</th><th>动作</th><th>操作人</th><th>详情</th></tr></thead>
+      <tbody id="auditRows"></tbody></table></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TYPE_LABELS = { experience: "经验", calendar: "日历", fact: "事实", preference: "偏好" };
+const ACTION_LABELS = { created: "新建", updated: "修改", deleted: "删除", approved: "采纳", rejected: "驳回" };
+let memories = [], types = [], current = null;
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v; else if (k.startsWith("on")) node[k] = v; else node.setAttribute(k, v);
+  }
+  for (const c of children) node.append(c instanceof Node ? c : document.createTextNode(c ?? ""));
+  return node;
+}
+
+function toast(msg, isError = false) {
+  const t = $("toast");
+  t.textContent = msg; t.className = isError ? "error" : ""; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = "none"), 3000);
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: { "Content-Type": "application/json" },
+                                  body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { toast("登录已失效，请重新打开启动时打印的链接", true); throw new Error("401"); }
+  if (!res.ok) { toast(data.error || `请求失败（${res.status}）`, true); throw new Error(data.error); }
+  return data;
+}
+
+function fmtTime(v) {
+  const d = typeof v === "number" ? new Date(v * 1000) : new Date(v);
+  return isNaN(d) ? "" : d.toLocaleString("zh-CN", { hour12: false });
+}
+
+// ---- 记忆库 ----
+async function loadMemories(selectSlug) {
+  const data = await api("GET", "/api/memories");
+  memories = data.memories; types = data.types;
+  $("indexPreview").textContent = data.index;
+  $("mType").replaceChildren(...types.map((t) => el("option", { value: t }, TYPE_LABELS[t] || t)));
+  renderMemList();
+  const pick = memories.find((m) => m.slug === (selectSlug ?? current?.slug)) || memories[0];
+  pick ? selectMemory(pick) : newMemory();
+}
+
+function renderMemList() {
+  const q = $("memSearch").value.trim().toLowerCase();
+  const shown = memories.filter((m) => !q || `${m.name} ${m.description} ${m.body}`.toLowerCase().includes(q));
+  $("memList").replaceChildren(...(shown.length ? shown.map((m) =>
+    el("div", { class: "item" + (current?.slug === m.slug ? " active" : ""), onclick: () => selectMemory(m) },
+      el("div", { class: "name" }, m.name, " ", el("span", { class: "tag" }, TYPE_LABELS[m.type] || m.type)),
+      el("div", { class: "desc" }, m.description))) : [el("div", { class: "empty" }, "没有记忆")]));
+}
+
+function selectMemory(m) {
+  current = m;
+  $("mName").value = m.name; $("mDesc").value = m.description; $("mBody").value = m.body;
+  if (![...$("mType").options].some((o) => o.value === m.type)) $("mType").append(el("option", { value: m.type }, m.type));
+  $("mType").value = m.type;
+  $("mInfo").textContent = `文件 ${m.slug}.md · 更新于 ${fmtTime(m.updated_at)}`;
+  $("delMem").disabled = false;
+  renderMemList();
+}
+
+function newMemory() {
+  current = null;
+  $("memForm").reset(); $("mType").value = "experience";
+  $("mInfo").textContent = "新建记忆"; $("delMem").disabled = true;
+  renderMemList(); $("mName").focus();
+}
+
+$("memForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const body = { name: $("mName").value, description: $("mDesc").value, type: $("mType").value, body: $("mBody").value };
+  const saved = current ? await api("PUT", `/api/memories/${encodeURIComponent(current.slug)}`, body)
+                        : await api("POST", "/api/memories", body);
+  toast("已保存"); await loadMemories(saved.slug);
+};
+$("delMem").onclick = async () => {
+  if (!current || !confirm(`删除记忆「${current.name}」？删除后 agent 不会再召回它。`)) return;
+  await api("DELETE", `/api/memories/${encodeURIComponent(current.slug)}`);
+  current = null; toast("已删除"); await loadMemories();
+};
+$("newMem").onclick = newMemory;
+$("memSearch").oninput = renderMemList;
+
+// ---- 记忆草稿 ----
+async function loadDrafts() {
+  const status = $("draftStatus").value;
+  const { drafts } = await api("GET", `/api/drafts?status=${encodeURIComponent(status)}`);
+  if (status === "待审核") setDraftCount(drafts.length);
+  $("draftList").replaceChildren(...(drafts.length ? drafts.map((d) => draftCard(d, status === "待审核"))
+                                                    : [el("div", { class: "card empty" }, `没有${status}的草稿`)]));
+}
+
+function setDraftCount(n) {
+  $("draftCount").textContent = n; $("draftCount").hidden = !n;
+}
+
+function draftCard(d, editable) {
+  const name = el("input", { value: d.name }), desc = el("input", { value: d.description || "" });
+  const type = el("select", {}, ...types.map((t) => el("option", { value: t }, TYPE_LABELS[t] || t)));
+  type.value = d.type; const body = el("textarea", {}); body.value = d.body || "";
+  for (const f of [name, desc, type, body]) f.disabled = !editable;
+  const existing = memories.find((m) => m.name === d.name);
+  const card = el("div", { class: "card" },
+    el("div", { class: "meta" }, `${d.id} · 来自 ${d.task_id || "系统"} · ${fmtTime(d.created_at)}`,
+       existing ? " · 采纳后会更新已有同名记忆" : ""),
+    el("div", { class: "meta" }, `提交理由：${d.reason || "无"}`),
+    el("label", {}, "名称", name), el("label", {}, "一句话描述", desc),
+    el("label", {}, "类型", type), el("label", {}, "正文", body));
+  if (editable) {
+    card.append(el("div", { class: "row" }, el("span", { class: "spacer" }),
+      el("button", { class: "btn danger", onclick: async () => {
+        const note = prompt("驳回原因（可留空）") ?? null; if (note === null) return;
+        await api("POST", `/api/drafts/${d.id}/reject`, { note }); toast("已驳回"); loadDrafts();
+      } }, "驳回"),
+      el("button", { class: "btn primary", onclick: async () => {
+        await api("POST", `/api/drafts/${d.id}/approve`,
+                  { name: name.value, description: desc.value, type: type.value, body: body.value });
+        toast("已采纳，写入记忆库"); await loadMemories(); loadDrafts();
+      } }, "采纳")));
+  }
+  return card;
+}
+$("draftStatus").onchange = loadDrafts;
+
+// ---- 召回记录 ----
+async function loadRecalls() {
+  const task = $("recallTask").value.trim();
+  const { recalls } = await api("GET", `/api/recalls${task ? "?task=" + encodeURIComponent(task) : ""}`);
+  $("recallRows").replaceChildren(...(recalls.length ? recalls.map((r) => el("tr", {},
+    el("td", {}, fmtTime(r.created_at)), el("td", {}, r.task_id || "-"), el("td", {}, r.query),
+    el("td", {}, r.hits.length ? r.hits.join("、") : el("span", { class: "tag" }, "无命中"))))
+    : [el("tr", {}, el("td", { colspan: 4, class: "empty" }, "还没有召回记录"))]));
+}
+$("recallFilter").onclick = loadRecalls;
+
+// ---- 变更记录 ----
+async function loadAudit() {
+  const { events } = await api("GET", "/api/audit");
+  $("auditRows").replaceChildren(...(events.length ? events.map((e) => el("tr", {},
+    el("td", {}, fmtTime(e.created_at)), el("td", {}, `${e.entity === "memory" ? "记忆" : "草稿"} ${e.entity_id}`),
+    el("td", {}, ACTION_LABELS[e.event] || e.event), el("td", {}, e.actor || "-"),
+    el("td", {}, el("pre", {}, e.detail ? JSON.stringify(e.detail, null, 2).slice(0, 800) : ""))))
+    : [el("tr", {}, el("td", { colspan: 5, class: "empty" }, "还没有变更"))]));
+}
+
+// ---- 标签页 ----
+const loaders = { memories: loadMemories, drafts: loadDrafts, recalls: loadRecalls, audit: loadAudit };
+$("tabs").onclick = (e) => {
+  const btn = e.target.closest("button"); if (!btn) return;
+  for (const b of $("tabs").children) b.classList.toggle("active", b === btn);
+  for (const k of Object.keys(loaders)) $(k).hidden = k !== btn.dataset.tab;
+  loaders[btn.dataset.tab]();
+};
+
+loadMemories().then(() => api("GET", "/api/drafts?status=" + encodeURIComponent("待审核")))
+              .then(({ drafts }) => setDraftCount(drafts.length)).catch(() => {});
+</script>
+</body>
+</html>

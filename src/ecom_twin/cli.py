@@ -416,6 +416,27 @@ def cmd_browser_login(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_console(args: argparse.Namespace) -> int:
+    import os
+    from .console import make_server
+    settings = load_settings(args.config)
+    store = Store(settings.db_path)
+    if args.host not in ("127.0.0.1", "localhost"):
+        print(f"Warning: console will listen on {args.host}. Anyone with the link can modify memories. "
+              f"Please confirm your network environment is secure.")
+    server, token = make_server(store, MemoryStore(store, settings.memory_dir), args.host, args.port,
+                                token=os.environ.get("ECOM_TWIN_CONSOLE_TOKEN"))
+    print(f"Console started: http://{args.host}:{args.port}/?token={token}")
+    print("Open the link above (includes login token, do not share). Press Ctrl+C to exit.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     from .config import Approver, Limits, Settings
 
@@ -529,6 +550,10 @@ def main(argv: list[str] | None = None) -> int:
     bl = sub.add_parser("browser-login", help="启动内部平台浏览器并打开登录页，保存登录状态后按 Ctrl+C 退出")
     bl.add_argument("platform", help="平台 key，对应 settings.toml [platforms.<key>]")
     bl.set_defaults(func=cmd_browser_login)
+    c = sub.add_parser("console", help="Launch admin console web UI for memory maintenance and recall records")
+    c.add_argument("--host", default="127.0.0.1", help="Host to listen on (default: 127.0.0.1)")
+    c.add_argument("--port", type=int, default=8766, help="Port to listen on (default: 8766)")
+    c.set_defaults(func=cmd_console)
     r = sub.add_parser("runtimes")
     r.add_argument("--path", action="append", help="临时指定路径试验证，例如 --path cursor=/path/to/cursor-agent")
     r.add_argument("--json", action="store_true")
