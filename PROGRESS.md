@@ -102,6 +102,7 @@
 | 功能4：店铺背景查询（白名单状态、审批人、硬上限、ERP 店铺信息） | 11.5 | ✅ | `mcp_server.py` 的 `get_shop_context` |
 | 功能5：只读网页取证（白名单域名公开页面截图 + 正文提取，不能点击/登录） | 13.1 | ✅ | `browser.py`、`mcp_server.py` 的 `capture_page`；真实 Chrome 抓取已验证 |
 | 功能6：内部平台浏览器操作（海外仓、OA 审批等非卖货后台），可操作配置和 MCP 工具 | 13.2 | ✅ | `platform_browser.py`、`actions.BrowserFlow`、`mcp_server.py` 的 `platform_list`/`platform_open`、`ecom-twin browser-login` |
+| 功能7：记忆维护控制台（本地 Web UI，记忆库增删改、草稿采纳驳回、召回记录查看） | 12.2 | ✅ | `console.py`、`web/console.html`、`ecom-twin console` |
 | 功能8：数据库自动迁移（自动补齐缺失列，如 `tasks.origin_chat_id`、`steps.evidence`） | 11.5 | ✅ | `store.py` |
 
 ## 二、与设计的偏差（需要时回写 DESIGN.md）
