@@ -52,6 +52,11 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { color: var(--danger); }
   button:disabled { opacity: .5; cursor: default; }
+  del.diff { background: #fde2e2; color: #a12; text-decoration: line-through; }
+  ins.diff { background: #dcf5e3; color: #0a6b2f; text-decoration: none; }
+  /* 运营账号：改动类的按钮都藏起来（后端也会拒绝），只留查看和审阅草稿 */
+  body.readonly .owner-only, body.readonly #memForm .row button, body.readonly #config button { display: none !important; }
+  .role-banner { background: #fff7e0; border: 1px solid #f0d58a; color: #7a5a00; padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; }
   .tag { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px; background: var(--bg);
          border: 1px solid var(--line); color: var(--muted); }
   .drafts { display: grid; gap: 16px; }
@@ -74,24 +79,40 @@
     <button data-tab="drafts">记忆草稿<span id="draftCount" class="badge" hidden></span></button>
     <button data-tab="recalls">召回记录</button>
     <button data-tab="audit">变更记录</button>
+    <button data-tab="config">规则配置</button>
+    <button data-tab="intakeView">投递与合并</button>
+    <button data-tab="runtimes">本机 CLI</button>
+    <button data-tab="listings">Listing 对比</button>
+    <button data-tab="costs">成本</button>
+    <button data-tab="shadow">影子模式</button>
   </nav>
 </header>
 <main>
+  <div id="roleBanner" class="role-banner" hidden>当前是运营账号：所有页面都能看，记忆草稿能采纳或驳回；改规则配置、记忆库、导入、回滚要用负责人的链接。</div>
   <section id="memories">
-    <p class="hint">人工精炼的经验和判断。agent 开局只看到名称和一句话描述（索引），需要时按关键词召回正文。
-      客观事实（当前出价、库存）不放这里；固定步骤的 SOP 放 skill。</p>
+    <p class="hint">人工精炼的经验和判断。agent 开局只看到索引（名称 — 触发动作），按这一轮要做的动作比索引，
+      比中了才读正文。客观事实（当前出价、库存）不放这里；固定步骤的 SOP 放 skill。</p>
+    <p class="meta" id="memBudget"></p>
     <div class="layout">
       <div class="card list">
         <input type="search" id="memSearch" aria-label="搜索记忆" placeholder="搜索名称、描述、正文">
-        <button class="btn" id="newMem" style="width:100%;margin-bottom:8px">+ 新建记忆</button>
+        <button class="btn owner-only" id="newMem" style="width:100%;margin-bottom:8px">+ 新建记忆</button>
+        <div class="row" style="margin:0 0 8px;gap:8px">
+          <button class="btn" id="exportMem" title="把全部记忆拼成一个纯文本记忆包，能直接发给同事看">导出记忆包</button>
+          <button class="btn owner-only" id="importMem" type="button">导入记忆包</button>
+          <input type="file" id="importFile" accept=".txt,.md,text/plain" hidden>
+        </div>
         <div id="memList"></div>
       </div>
       <div class="card">
         <form id="memForm">
           <label for="mName">名称</label>
           <input id="mName" maxlength="80" required>
-          <label for="mDesc">一句话描述 <small>出现在开局索引里，写清「什么时候该用这条」</small></label>
-          <input id="mDesc" maxlength="200" required>
+          <label for="mDesc">描述 <small>每轮都进索引：写「做什么动作时打开它、打开能拿到什么」，列动作不列名词，≤120 字</small></label>
+          <div class="row" style="gap:8px;margin:0">
+            <input id="mDesc" maxlength="120" required style="flex:1">
+            <button type="button" class="btn owner-only" id="suggestDesc" title="按索引的写法标准，让本机 Claude Code 根据正文改写描述；只填进来，保存要你点">AI 改写描述</button>
+          </div>
           <label for="mType">类型</label>
           <select id="mType"></select>
           <label for="mBody">正文 <small>Markdown</small></label>
@@ -103,6 +124,11 @@
             <button type="submit" class="btn primary">保存</button>
           </div>
         </form>
+        <details style="margin-top:16px" id="memHistoryBox">
+          <summary class="meta">版本历史（每次保存、采纳草稿、回滚、导入前自动留一份，每条最多 20 份）</summary>
+          <div id="memHistory" style="margin-top:8px"></div>
+          <pre id="snapshotView" hidden style="margin-top:8px;max-height:320px;overflow:auto"></pre>
+        </details>
         <details style="margin-top:16px">
           <summary class="meta">查看 agent 开局看到的记忆索引</summary>
           <pre id="indexPreview" style="margin-top:8px"></pre>
@@ -117,6 +143,7 @@
       <select id="draftStatus" aria-label="草稿状态" style="width:auto">
         <option>待审核</option><option>已采纳</option><option>已驳回</option>
       </select>
+      <span class="meta" id="draftStats" style="margin-left:12px"></span>
     </div>
     <div class="drafts" id="draftList"></div>
   </section>
@@ -127,14 +154,74 @@
       <input id="recallTask" aria-label="按任务号筛选" placeholder="按任务号筛选，例如 T-0003" style="max-width:280px">
       <button class="btn" id="recallFilter">筛选</button>
     </div>
+    <h3>按任务</h3>
+    <div class="card"><table><thead><tr><th>任务</th><th>调用</th><th>读全文</th><th>检索</th><th>未命中</th><th>最近一次</th></tr></thead>
+      <tbody id="recallSummaryRows"></tbody></table></div>
+    <h3>调用明细</h3>
     <div class="card"><table><thead><tr><th>时间</th><th>任务</th><th>关键词</th><th>命中</th></tr></thead>
       <tbody id="recallRows"></tbody></table></div>
   </section>
 
   <section id="audit" hidden>
-    <p class="hint">记忆和记忆草稿的所有改动：谁、什么时候、做了什么。</p>
+    <p class="hint">记忆、记忆草稿、规则配置的所有改动：谁、什么时候、做了什么。</p>
     <div class="card"><table><thead><tr><th>时间</th><th>对象</th><th>动作</th><th>操作人</th><th>详情</th></tr></thead>
       <tbody id="auditRows"></tbody></table></div>
+  </section>
+
+  <section id="config" hidden>
+    <p class="hint" id="configNote"></p>
+    <div id="configList" class="drafts"></div>
+  </section>
+
+  <section id="intakeView" hidden>
+    <p class="hint">消息入口的运行情况：还在攒批的消息、每批消息的合并判定（并到哪个任务、哪一层判的、是否唤醒）、分身发出的消息。</p>
+    <h3>攒批中</h3>
+    <div class="card"><table><thead><tr><th>收到时间</th><th>会话</th><th>发送人</th><th>内容</th></tr></thead>
+      <tbody id="bufferRows"></tbody></table></div>
+    <h3>合并判定</h3>
+    <div class="card"><table><thead><tr><th>时间</th><th>会话</th><th>任务</th><th>判定层</th><th>唤醒</th><th>依据</th></tr></thead>
+      <tbody id="decisionRows"></tbody></table></div>
+    <h3>存疑：判了不相关却说不出属于哪一类</h3>
+    <p class="hint">agent 判这条和负责人的活无关，但理由不属于闲聊、表态、点了别人、同事的活、无关通知、已办完任何一类。
+      这些消息没有处理，看看是不是漏了活。</p>
+    <div class="card"><table><thead><tr><th>时间</th><th>任务</th><th>消息</th><th>agent 给的理由</th></tr></thead>
+      <tbody id="doubtfulRows"></tbody></table></div>
+    <h3>代发记录</h3>
+    <div class="card"><table><thead><tr><th>时间</th><th>任务</th><th>类型</th><th>发到</th><th>内容</th></tr></thead>
+      <tbody id="outboundRows"></tbody></table></div>
+  </section>
+
+  <section id="runtimes" hidden>
+    <p class="hint">以 settings.toml 里填的路径为准，留空则自动查找；运行 --version 验证。底座要「验证通过」且「适配器已实现」才能调度。</p>
+    <div class="card"><table><thead><tr><th>底座</th><th>路径</th><th>状态</th><th>版本 / 错误</th></tr></thead>
+      <tbody id="runtimeRows"></tbody></table></div>
+  </section>
+
+  <section id="listings" hidden>
+    <p class="hint">agent 在妙手采集箱暂存区改过的商品：每个字段第一次改之前是什么、最后改成了什么，标题和描述逐字标出差别。
+      审批上架提案之前对着看一眼。</p>
+    <div class="row" style="margin:0 0 16px">
+      <input id="listingTask" aria-label="按任务号筛选" placeholder="按任务号筛选，例如 T-0003" style="max-width:280px">
+      <button class="btn" id="listingFilter">筛选</button>
+    </div>
+    <div id="listingList"></div>
+  </section>
+
+  <section id="costs" hidden>
+    <div class="row" style="margin:0 0 16px">
+      <input id="costMonth" aria-label="月份" placeholder="YYYY-MM" style="max-width:160px">
+      <button class="btn" id="costLoad">查询</button>
+    </div>
+    <div id="costTables"></div>
+  </section>
+
+  <section id="shadow" hidden>
+    <p class="hint">影子模式下，分身照常出提案但不推送审批、不执行；和运营的实际操作比对，吻合率达标再开放执行。</p>
+    <div class="card"><table><thead><tr><th>操作类型</th><th>提案数</th><th>已比对</th><th>吻合</th><th>吻合率</th></tr></thead>
+      <tbody id="shadowRows"></tbody></table></div>
+    <h3>分歧明细</h3>
+    <div class="card"><table><thead><tr><th>提案</th><th>操作</th><th>分身的提案</th><th>人工实际操作</th><th>结果</th></tr></thead>
+      <tbody id="shadowDiffRows"></tbody></table></div>
   </section>
 </main>
 <div id="toast"></div>
@@ -179,6 +266,9 @@ async function loadMemories(selectSlug) {
   const data = await api("GET", "/api/memories");
   memories = data.memories; types = data.types;
   $("indexPreview").textContent = data.index;
+  const b = data.budget;
+  $("memBudget").textContent = `索引预算：${b.entries}/${b.max_entries} 条，${b.index_bytes}/${b.max_index_bytes} 字节` +
+    (data.problems.length ? ` · ${data.problems.map((p) => (p.level === "error" ? "错误：" : "提醒：") + p.text).join("；")}` : "");
   $("mType").replaceChildren(...types.map((t) => el("option", { value: t }, TYPE_LABELS[t] || t)));
   renderMemList();
   const pick = memories.find((m) => m.slug === (selectSlug ?? current?.slug)) || memories[0];
@@ -190,7 +280,8 @@ function renderMemList() {
   const shown = memories.filter((m) => !q || `${m.name} ${m.description} ${m.body}`.toLowerCase().includes(q));
   $("memList").replaceChildren(...(shown.length ? shown.map((m) =>
     el("div", { class: "item" + (current?.slug === m.slug ? " active" : ""), onclick: () => selectMemory(m) },
-      el("div", { class: "name" }, m.name, " ", el("span", { class: "tag" }, TYPE_LABELS[m.type] || m.type)),
+      el("div", { class: "name" }, m.name, " ", el("span", { class: "tag" }, TYPE_LABELS[m.type] || m.type),
+        m.orphan ? el("span", { class: "tag", title: "没有链向别的记忆，也没有被链着" }, "孤立") : ""),
       el("div", { class: "desc" }, m.description))) : [el("div", { class: "empty" }, "没有记忆")]));
 }
 
@@ -199,9 +290,27 @@ function selectMemory(m) {
   $("mName").value = m.name; $("mDesc").value = m.description; $("mBody").value = m.body;
   if (![...$("mType").options].some((o) => o.value === m.type)) $("mType").append(el("option", { value: m.type }, m.type));
   $("mType").value = m.type;
-  $("mInfo").textContent = `文件 ${m.slug}.md · 更新于 ${fmtTime(m.updated_at)}`;
+  const rel = [m.links.length ? `链向《${m.links.join("》《")}》` : "", m.linked_by.length ? `被《${m.linked_by.join("》《")}》链着` : ""]
+    .filter(Boolean).join("；");
+  $("mInfo").textContent = `文件 ${m.slug}.md · 更新于 ${fmtTime(m.updated_at)}` + (rel ? ` · ${rel}` : "");
   $("delMem").disabled = false;
   renderMemList();
+  loadHistory(m);
+}
+
+async function loadHistory(m) {
+  $("snapshotView").hidden = true;
+  const { history } = await api("GET", `/api/memories/${encodeURIComponent(m.slug)}/history`);
+  $("memHistory").replaceChildren(...(history.length ? history.map((h) => el("div", { class: "row", style: "gap:8px;margin:4px 0" },
+    el("span", { class: "meta" }, fmtTime(h.taken_at)), el("span", { class: "spacer" }),
+    el("button", { class: "btn", type: "button", onclick: async () => {
+      const { text } = await api("GET", `/api/memories/${encodeURIComponent(m.slug)}/history/${h.file}`);
+      $("snapshotView").textContent = text; $("snapshotView").hidden = false; } }, "查看"),
+    el("button", { class: "btn owner-only", type: "button", onclick: async () => {
+      if (!confirm(`把「${m.name}」回滚到 ${fmtTime(h.taken_at)} 的版本？现在的内容会先存一份，回滚错了还能再回来。`)) return;
+      await api("POST", `/api/memories/${encodeURIComponent(m.slug)}/rollback`, { file: h.file });
+      toast("已回滚"); await loadMemories(m.slug); } }, "回滚到这一版")))
+    : [el("div", { class: "empty" }, "还没有历史版本（第一次修改之后才有）")]));
 }
 
 function newMemory() {
@@ -213,7 +322,8 @@ function newMemory() {
 
 $("memForm").onsubmit = async (e) => {
   e.preventDefault();
-  const body = { name: $("mName").value, description: $("mDesc").value, type: $("mType").value, body: $("mBody").value };
+  const body = { name: $("mName").value, description: $("mDesc").value, type: $("mType").value, body: $("mBody").value,
+                 sha256: current?.sha256 };
   const saved = current ? await api("PUT", `/api/memories/${encodeURIComponent(current.slug)}`, body)
                         : await api("POST", "/api/memories", body);
   toast("已保存"); await loadMemories(saved.slug);
@@ -224,12 +334,38 @@ $("delMem").onclick = async () => {
   current = null; toast("已删除"); await loadMemories();
 };
 $("newMem").onclick = newMemory;
+$("suggestDesc").onclick = async () => {
+  if (!current) { toast("先保存这条记忆，再让 AI 改写描述", true); return; }
+  $("suggestDesc").disabled = true; $("suggestDesc").textContent = "改写中…";
+  try {
+    const r = await api("POST", `/api/memories/${encodeURIComponent(current.slug)}/suggest-description`, {});
+    $("mDesc").value = r.suggestion;
+    toast("已填入建议的描述，看过没问题再点保存");
+  } finally { $("suggestDesc").disabled = false; $("suggestDesc").textContent = "AI 改写描述"; }
+};
+$("exportMem").onclick = async () => {
+  const { text } = await api("GET", "/api/memory-bundle");
+  const a = el("a", { href: URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" })),
+                      download: `ecom-twin-记忆包-${new Date().toISOString().slice(0, 10)}.txt` });
+  document.body.append(a); a.click(); a.remove();
+};
+$("importMem").onclick = () => $("importFile").click();
+$("importFile").onchange = async (e) => {
+  const file = e.target.files[0]; e.target.value = "";
+  if (!file || !confirm(`导入「${file.name}」？同名记忆会被覆盖（覆盖前自动留一份历史，可回滚）。`)) return;
+  const r = await api("POST", "/api/memory-bundle", { text: await file.text() });
+  toast(`导入完成：新增 ${r.created.length} 条，更新 ${r.updated.length} 条，没变 ${r.unchanged.length} 条`);
+  await loadMemories();
+};
 $("memSearch").oninput = renderMemList;
 
 // ---- 记忆草稿 ----
 async function loadDrafts() {
   const status = $("draftStatus").value;
-  const { drafts } = await api("GET", `/api/drafts?status=${encodeURIComponent(status)}`);
+  const { drafts, stats } = await api("GET", `/api/drafts?status=${encodeURIComponent(status)}`);
+  const pct = (v) => v === null || v === undefined ? "-" : `${Math.round(v * 100)}%`;
+  if (stats) $("draftStats").textContent = `已采纳 ${stats.adopted} 条，其中改过再采纳 ${stats.edited} 条（改动率 ${pct(stats.edit_rate)}）`
+    + ` · 已驳回 ${stats.rejected} 条（驳回率 ${pct(stats.reject_rate)}）· 改动率、驳回率高说明 agent 写的草稿不合用`;
   if (status === "待审核") setDraftCount(drafts.length);
   $("draftList").replaceChildren(...(drafts.length ? drafts.map((d) => draftCard(d, status === "待审核"))
                                                     : [el("div", { class: "card empty" }, `没有${status}的草稿`)]));
@@ -239,18 +375,31 @@ function setDraftCount(n) {
   $("draftCount").textContent = n; $("draftCount").hidden = !n;
 }
 
+const MODE_LABELS = { create: "新建", append: "追加一节", revise: "改一段", remove: "删一段" };
 function draftCard(d, editable) {
+  const mode = d.mode || "create";
   const name = el("input", { value: d.name }), desc = el("input", { value: d.description || "" });
   const type = el("select", {}, ...types.map((t) => el("option", { value: t }, TYPE_LABELS[t] || t)));
   type.value = d.type; const body = el("textarea", {}); body.value = d.body || "";
-  for (const f of [name, desc, type, body]) f.disabled = !editable;
-  const existing = memories.find((m) => m.name === d.name);
+  const section = el("input", { value: d.target_section || "" });
+  const oldText = el("textarea", {}); oldText.value = d.old_text || "";
+  for (const f of [name, desc, type, body, section, oldText]) f.disabled = !editable;
+  const fields = mode === "create"
+    ? [el("label", {}, "名称", name), el("label", {}, "描述（做什么动作时打开它，≤120 字）", desc),
+       el("label", {}, "类型", type), el("label", {}, "正文", body)]
+    : [...(mode === "append" ? [] : [el("label", {}, "小节", section),
+                                     el("label", {}, "原文（采纳时逐字匹配，必须恰好出现一次）", oldText)]),
+       ...(mode === "remove" ? [] : [el("label", {}, mode === "append" ? "追加的一节" : "替换成", body)])];
   const card = el("div", { class: "card" },
-    el("div", { class: "meta" }, `${d.id} · 来自 ${d.task_id || "系统"} · ${fmtTime(d.created_at)}`,
-       existing ? " · 采纳后会更新已有同名记忆" : ""),
-    el("div", { class: "meta" }, `提交理由：${d.reason || "无"}`),
-    el("label", {}, "名称", name), el("label", {}, "一句话描述", desc),
-    el("label", {}, "类型", type), el("label", {}, "正文", body));
+    el("div", { class: "meta" }, `${d.id} · ${MODE_LABELS[mode] || mode}`,
+       mode === "create" ? "" : ` · 目标《${d.target_name}》`, ` · 来自 ${d.task_id || "系统"} · ${fmtTime(d.created_at)}`),
+    el("div", { class: "meta" }, `为什么值得记：${d.why || d.reason || "无"}`),
+    el("div", { class: "meta" }, `怎么确认的：${d.evidence || "无"}`),
+    ...(d.target_body !== undefined && mode !== "create"
+      ? [el("details", {}, el("summary", { class: "meta" }, "目标记忆的当前内容"),
+            el("pre", { class: "meta", style: "white-space:pre-wrap" }, d.target_body ?? "（目标记忆不存在）"))] : []),
+    ...(d.note ? [el("div", { class: "meta" }, `驳回原因：${d.note}`)] : []),
+    ...fields);
   if (editable) {
     card.append(el("div", { class: "row" }, el("span", { class: "spacer" }),
       el("button", { class: "btn danger", onclick: async () => {
@@ -258,8 +407,9 @@ function draftCard(d, editable) {
         await api("POST", `/api/drafts/${d.id}/reject`, { note }); toast("已驳回"); loadDrafts();
       } }, "驳回"),
       el("button", { class: "btn primary", onclick: async () => {
-        await api("POST", `/api/drafts/${d.id}/approve`,
-                  { name: name.value, description: desc.value, type: type.value, body: body.value });
+        await api("POST", `/api/drafts/${d.id}/approve`, mode === "create"
+                  ? { name: name.value, description: desc.value, type: type.value, body: body.value }
+                  : { body: body.value, target_section: section.value, old_text: oldText.value });
         toast("已采纳，写入记忆库"); await loadMemories(); loadDrafts();
       } }, "采纳")));
   }
@@ -270,9 +420,13 @@ $("draftStatus").onchange = loadDrafts;
 // ---- 召回记录 ----
 async function loadRecalls() {
   const task = $("recallTask").value.trim();
-  const { recalls } = await api("GET", `/api/recalls${task ? "?task=" + encodeURIComponent(task) : ""}`);
+  const { recalls, summary } = await api("GET", `/api/recalls${task ? "?task=" + encodeURIComponent(task) : ""}`);
+  rows("recallSummaryRows", summary || [], [(r) => `${r.task_id || "-"} ${r.title || ""}`, (r) => r.calls, (r) => r.reads,
+    (r) => r.searches, (r) => r.misses ? el("span", { class: "tag" }, String(r.misses)) : "0", (r) => fmtTime(r.last_at)],
+    "还没有召回记录");
   $("recallRows").replaceChildren(...(recalls.length ? recalls.map((r) => el("tr", {},
-    el("td", {}, fmtTime(r.created_at)), el("td", {}, r.task_id || "-"), el("td", {}, r.query),
+    el("td", {}, fmtTime(r.created_at)), el("td", {}, r.task_id || "-"),
+    el("td", {}, `${r.command === "read" ? "读取" : "检索"} ${r.query}`),
     el("td", {}, r.hits.length ? r.hits.join("、") : el("span", { class: "tag" }, "无命中"))))
     : [el("tr", {}, el("td", { colspan: 4, class: "empty" }, "还没有召回记录"))]));
 }
@@ -282,14 +436,165 @@ $("recallFilter").onclick = loadRecalls;
 async function loadAudit() {
   const { events } = await api("GET", "/api/audit");
   $("auditRows").replaceChildren(...(events.length ? events.map((e) => el("tr", {},
-    el("td", {}, fmtTime(e.created_at)), el("td", {}, `${e.entity === "memory" ? "记忆" : "草稿"} ${e.entity_id}`),
+    el("td", {}, fmtTime(e.created_at)), el("td", {}, `${{ memory: "记忆", memory_draft: "草稿", config: "配置" }[e.entity] || e.entity} ${e.entity_id}`),
     el("td", {}, ACTION_LABELS[e.event] || e.event), el("td", {}, e.actor || "-"),
     el("td", {}, el("pre", {}, e.detail ? JSON.stringify(e.detail, null, 2).slice(0, 800) : ""))))
     : [el("tr", {}, el("td", { colspan: 5, class: "empty" }, "还没有变更"))]));
 }
 
+// ---- 规则配置 ----
+const SECTION_LABELS = { limits: "硬上限", approval: "审批", approvers: "审批人", send_permissions: "代发权限",
+  feishu: "飞书上下文", intake: "消息入口", runtime: "底座", shadow: "影子模式" };
+
+function fieldInput(f) {
+  if (f.type === "bool") {
+    const sel = el("select", {}, el("option", { value: "true" }, "开"), el("option", { value: "false" }, "关"));
+    sel.value = f.value ? "true" : "false"; return sel;
+  }
+  if (f.type === "json") {
+    const ta = el("textarea", { style: "min-height:120px" }); ta.value = JSON.stringify(f.value || {}, null, 2); return ta;
+  }
+  const input = el("input", {});
+  input.value = Array.isArray(f.value) ? f.value.join(", ") : (f.value ?? "");
+  return input;
+}
+
+async function saveField(f, input, confirm = false) {
+  const value = f.type === "bool" ? input.value === "true" : input.value;
+  const res = await api("POST", "/api/config", { section: f.section, key: f.key, value, confirm });
+  if (res.need_confirm) {
+    const ok = window.confirm(`「${res.label}」是高风险配置。\n改前：${JSON.stringify(res.before)}\n改后：${JSON.stringify(res.after)}\n确认保存？`);
+    if (ok) return saveField(f, input, true);
+    return;
+  }
+  toast("已保存，重启 serve 后生效");
+}
+
+async function loadConfig() {
+  const data = await api("GET", "/api/config");
+  $("configNote").textContent = data.note;
+  const groups = {};
+  for (const f of data.fields) (groups[f.section] ||= []).push(f);
+  $("configList").replaceChildren(...Object.entries(groups).map(([section, fields]) => el("div", { class: "card" },
+    el("h3", { style: "margin-top:0" }, SECTION_LABELS[section] || section),
+    ...fields.map((f) => {
+      const input = fieldInput(f);
+      return el("div", {}, el("label", {}, f.label, f.high_risk ? el("span", { class: "tag", style: "margin-left:8px" }, "高风险") : "", input),
+        el("div", { class: "row", style: "margin-top:6px" }, el("span", { class: "spacer" }),
+          el("button", { class: "btn", onclick: () => saveField(f, input) }, "保存")));
+    }))));
+}
+
+// ---- 投递与合并 ----
+function rows(target, items, cols, empty) {
+  $(target).replaceChildren(...(items.length ? items.map((r) => el("tr", {}, ...cols.map((c) => el("td", {}, c(r)))))
+    : [el("tr", {}, el("td", { colspan: cols.length, class: "empty" }, empty))]));
+}
+
+async function loadIntake() {
+  const d = await api("GET", "/api/intake");
+  rows("bufferRows", d.buffer, [(r) => fmtTime(r.received_at), (r) => r.chat_id, (r) => r.sender_id, (r) => r.text], "没有攒批中的消息");
+  rows("decisionRows", d.decisions, [(r) => fmtTime(r.created_at), (r) => r.chat_id, (r) => r.task_id || "（新任务）",
+    (r) => r.layer, (r) => r.drive ? "唤醒" : el("span", { class: "tag" }, "静音"), (r) => r.reason], "还没有判定记录");
+  rows("doubtfulRows", d.doubtful || [], [(r) => fmtTime(r.created_at), (r) => r.task_id, (r) => r.title,
+    (r) => r.reason], "没有存疑的判定");
+  rows("outboundRows", d.outbound, [(r) => fmtTime(r.created_at), (r) => r.task_id, (r) => r.kind, (r) => r.delivered_to,
+    (r) => (r.text || "").slice(0, 80)], "还没有代发记录");
+}
+
+// ---- Listing 对比 ----
+const FIELD_LABELS = { title: "标题", notes: "描述", cid: "类目" };
+function fieldLabel(f) {
+  const [head, ...rest] = f.split(".");
+  if (head === "sku_prices_cny") return `SKU「${rest.join(".")}」采购价（元）`;
+  if (head === "sku_prices") return `SKU「${rest.join(".")}」售价`;
+  return FIELD_LABELS[f] || f;
+}
+// 逐字差异（最长公共子序列）：文字不长（标题 ≤255 字），直接算
+function charDiff(a, b) {
+  a = [...a]; b = [...b];
+  if (a.length * b.length > 400000) return [el("del", { class: "diff" }, a.join("")), el("ins", { class: "diff" }, b.join(""))];
+  const dp = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--)
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  const push = (tag, ch) => { const last = out[out.length - 1];
+    if (last && last.tag === tag) last.text += ch; else out.push({ tag, text: ch }); };
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { push("span", a[i]); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) push("del", a[i++]); else push("ins", b[j++]);
+  }
+  while (i < a.length) push("del", a[i++]); while (j < b.length) push("ins", b[j++]);
+  // 几乎整段重写（比如中文标题翻成英文）：逐字交错着标反而难读，直接整段删 + 整段加
+  if (dp[0][0] < 0.3 * Math.max(a.length, b.length))
+    return [el("del", { class: "diff" }, a.join("")), " ", el("ins", { class: "diff" }, b.join(""))];
+  return out.map((p) => p.tag === "span" ? p.text : el(p.tag, { class: "diff" }, p.text));
+}
+function fmtValue(v) { return v === null || v === undefined ? "（空）" : typeof v === "object" ? JSON.stringify(v) : String(v); }
+async function loadListings() {
+  const task = $("listingTask").value.trim();
+  const { listings } = await api("GET", "/api/listings" + (task ? "?task=" + encodeURIComponent(task) : ""));
+  $("listingList").replaceChildren(...(listings.length ? listings.map((item) => el("div", { class: "card", style: "margin-bottom:12px" },
+    el("div", { class: "row", style: "gap:8px" },
+      el("strong", {}, `${item.object_type === "common" ? "公共采集箱" : "TikTok 采集箱"} #${item.object_id}`),
+      item.shop_key ? el("span", { class: "tag" }, item.shop_key) : "",
+      el("span", { class: "spacer" }),
+      el("span", { class: "meta" }, `任务 ${item.tasks.join("、") || "-"} · 提案 ${item.proposals.join("、") || "未提交"} · 最近改动 ${fmtTime(item.updated_at)}`)),
+    item.fields.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "字段"), el("th", {}, "改前"), el("th", {}, "改后"), el("th", {}, "差别"))),
+      el("tbody", {}, ...item.fields.map((f) => el("tr", {}, el("td", {}, fieldLabel(f.field)), el("td", {}, fmtValue(f.before)),
+        el("td", {}, fmtValue(f.after)),
+        el("td", {}, ...(typeof f.before === "string" && typeof f.after === "string" ? charDiff(f.before, f.after)
+          : [typeof f.before === "number" && typeof f.after === "number"
+              ? `${f.after > f.before ? "+" : ""}${(f.after - f.before).toFixed(2)}` : ""]))))))
+      : el("p", { class: "meta" }, "没有字段改动（只有采集、认领、绑定店铺）"),
+    el("details", { style: "margin-top:8px" }, el("summary", { class: "meta" }, `改动时间线（${item.changes.length} 次）`),
+      ...item.changes.map((c) => el("div", { class: "meta", style: "margin:4px 0" },
+        `${fmtTime(c.at)} · ${c.type} · 任务 ${c.task_id || "-"}${c.proposal_id ? " · 提案 " + c.proposal_id : ""}`)))))
+    : [el("div", { class: "card empty" }, "还没有暂存区改动")]));
+}
+$("listingFilter").onclick = loadListings;
+
+// ---- 本机 CLI ----
+async function loadRuntimes() {
+  const d = await api("GET", "/api/runtimes");
+  rows("runtimeRows", d.runtimes, [
+    (r) => r.label + (r.key === d.default ? "（默认）" : r.key === d.fallback ? "（备选）" : ""),
+    (r) => `${r.path || "-"}（${r.source}）`,
+    (r) => r.usable ? "可调度" : r.ok ? "验证通过，适配器未实现" : el("span", { class: "tag" }, "不可用"),
+    (r) => r.ok ? r.version : [r.error, r.hint].filter(Boolean).join("；")], "没有底座");
+}
+
+// ---- 成本 ----
+async function loadCosts() {
+  const month = $("costMonth").value.trim();
+  const d = await api("GET", "/api/costs" + (month ? "?month=" + encodeURIComponent(month) : ""));
+  $("costMonth").value = d.month;
+  const labels = { runtime: "按底座", scene: "按场景", shop_key: "按店铺" };
+  $("costTables").replaceChildren(...Object.entries(labels).map(([by, label]) => {
+    const body = el("tbody");
+    const items = d[by] || [];
+    body.replaceChildren(...(items.length ? items.map((r) => el("tr", {}, el("td", {}, r.key || "-"), el("td", {}, String(r.tasks)),
+      el("td", {}, `${r.input_tokens} + ${r.output_tokens}`), el("td", {}, `$${(r.cost_usd || 0).toFixed(2)}`),
+      el("td", {}, r.runs_without_cost ? `${r.runs_without_cost} 轮没报费用` : ""))) : [el("tr", {}, el("td", { colspan: 5, class: "empty" }, "没有记录"))]));
+    return el("div", { class: "card", style: "margin-bottom:16px" }, el("h3", { style: "margin-top:0" }, label),
+      el("table", {}, el("thead", {}, el("tr", {}, ...["对象", "任务数", "token", "费用", "备注"].map((h) => el("th", {}, h)))), body));
+  }));
+}
+$("costLoad").onclick = loadCosts;
+
+// ---- 影子模式 ----
+async function loadShadow() {
+  const d = await api("GET", "/api/shadow");
+  rows("shadowRows", d.summary, [(r) => r.action, (r) => String(r.proposals), (r) => String(r.compared),
+    (r) => String(r.matched), (r) => r.compared ? `${(r.match_rate * 100).toFixed(1)}%` : "-"], "还没有影子提案");
+  rows("shadowDiffRows", d.mismatches, [(r) => r.proposal_id, (r) => r.action, (r) => r.proposed, (r) => r.actual,
+    (r) => r.matched ? "吻合" : el("span", { class: "tag" }, "分歧")], "没有分歧");
+}
+
 // ---- 标签页 ----
-const loaders = { memories: loadMemories, drafts: loadDrafts, recalls: loadRecalls, audit: loadAudit };
+const loaders = { memories: loadMemories, drafts: loadDrafts, recalls: loadRecalls, audit: loadAudit,
+  config: loadConfig, intakeView: loadIntake, runtimes: loadRuntimes, costs: loadCosts, shadow: loadShadow,
+  listings: loadListings };
 $("tabs").onclick = (e) => {
   const btn = e.target.closest("button"); if (!btn) return;
   for (const b of $("tabs").children) b.classList.toggle("active", b === btn);
@@ -297,6 +602,13 @@ $("tabs").onclick = (e) => {
   loaders[btn.dataset.tab]();
 };
 
+api("GET", "/api/whoami").then(({ role }) => {
+  if (role !== "负责人") {
+    document.body.classList.add("readonly");
+    $("roleBanner").hidden = false;
+    for (const node of $("memForm").querySelectorAll("input, textarea, select")) node.readOnly = node.disabled = true;
+  }
+}).catch(() => {});
 loadMemories().then(() => api("GET", "/api/drafts?status=" + encodeURIComponent("待审核")))
               .then(({ drafts }) => setDraftCount(drafts.length)).catch(() => {});
 </script>

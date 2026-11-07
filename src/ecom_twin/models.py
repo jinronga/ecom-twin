@@ -42,6 +42,7 @@ class ProposalStatus(str, Enum):
     EXECUTED = "已执行"
     FAILED = "执行失败"
     ROLLED_BACK = "已回滚"
+    SHADOW = "影子"  # 影子模式：只记录，不推送审批、不执行
 
 
 class RejectReason(str, Enum):
@@ -80,7 +81,10 @@ class Task:
     session_id: str = ""        # 底座会话 ID，用于续跑
     switch_log: str = ""        # 因失败切换底座的记录
     origin_message_id: str = ""  # 触发任务的飞书消息，汇报回复到这条消息的 thread
-    origin_chat_id: str = ""    # 触发任务的飞书会话 ID，用于拉取上下文
+    origin_chat_id: str = ""     # 触发任务的会话，agent 拉上下文默认读这个会话
+    origin_chat_type: str = ""   # p2p / group；群里的回执、汇报受代发权限约束
+    transcript: str = ""         # 最近一轮 agent 完整记录的存档路径
+    waiting: str = ""            # agent 每轮第一行写的「在等谁做什么」，入口合并判断用（空或「无」= 不等）
 
 
 @dataclass
@@ -125,6 +129,7 @@ class Proposal:
     reject_note: str = ""
     card_message_id: str = ""
     reminded: bool = False
+    approvals: list[str] = field(default_factory=list)  # 已批准的人（高风险提案需要两个人）
     executed_at: datetime | None = None
     result: dict[str, Any] = field(default_factory=dict)
     created_at: datetime | None = None

@@ -46,3 +46,9 @@ def test_start_chrome_uses_new_instance_and_skips_busy_port(tmp_path, monkeypatc
     assert port == 9223
     assert calls and calls[0][:4] == ['/usr/bin/open', '-na', 'Google Chrome', '--args']
     assert '--new-window' in calls[0] and 'https://open.feishu.cn/app' in calls[0]
+    assert '--no-first-run' in calls[0] and '--no-default-browser-check' in calls[0]   # 不弹登录 Chrome 引导页
+    calls.clear()
+    chrome = tmp_path / 'Chrome'
+    chrome.write_text('')
+    evidence.start_chrome(chrome_path=str(chrome), user_data_dir=str(tmp_path / 'profile'), port=9300)
+    assert calls[0][0] == str(chrome) and '/usr/bin/open' not in calls[0]           # 自定义 Chrome 直接启动

@@ -20,7 +20,9 @@ def event(**overrides):
 def test_official_message_normalization_and_thread_parent():
     assert normalize_message(event()) == {
         'event_id': 'event_unique', 'sender_id': 'ou_owner', 'message_id': 'om_new',
-        'chat_type': 'p2p', 'content': '列出店铺', 'parent_id': 'om_report', 'chat_id': ''}
+        'chat_type': 'p2p', 'content': '列出店铺', 'parent_id': 'om_report', 'root_id': '', 'chat_id': ''}
+    # thread 里的回复带着 thread 第一句的 root_id：入口合并靠它认出接的是哪个任务的话
+    assert normalize_message(event(root_id='om_root'))['root_id'] == 'om_root'
     image = normalize_message(event(message_type='image', content='{"image_key":"img_v2_fixture"}'))
     assert image['content'] == '[飞书图片消息]'
     assert image['message_type'] == 'image'

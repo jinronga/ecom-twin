@@ -9,14 +9,13 @@ from typing import Any
 from .actions import ActionHandler, BrowserFlow, TiktokPublishViaMiaoshou
 from .approval import ApprovalService
 from .board import BoardSync
-from .config import PROJECT_ROOT, Settings
+from .config import Settings
 from .evidence import EVIDENCE_ROOT
 from .executor import Executor
 from .feishu import FeishuClient
 from .followups import FollowupService
 from .models import Proposal, ProposalStatus, TaskStatus
 from .proposals import ProposalService
-from .sops import SOPManager
 from .store import Store
 from .tasks import TaskService
 
@@ -30,6 +29,7 @@ _TASK_STATUS = {
     ProposalStatus.EXPIRED: TaskStatus.CLOSED,
     ProposalStatus.FAILED: TaskStatus.FAILED,
     ProposalStatus.ROLLED_BACK: TaskStatus.FAILED,
+    ProposalStatus.SHADOW: TaskStatus.CLOSED,
 }
 
 
@@ -45,33 +45,36 @@ class App:
     executor: Executor
     followups: FollowupService
     handlers: dict[str, ActionHandler]
-    sops: SOPManager  # 功能3：SOP 管理器
     miaoshou: Any = None
+    staging: Any = None
+    compliance: Any = None
+    shadow: Any = None
 
 
-def build_app(settings: Settings, store: Store, feishu: FeishuClient, miaoshou: Any) -> App:
+def default_browser_factory(settings: Settings):
+    from .platform_browser import PlatformBrowser
+    return lambda platform: PlatformBrowser(platform, chrome_path=settings.browser.chrome_path)
+
+
+def build_app(settings: Settings, store: Store, feishu: FeishuClient, miaoshou: Any,
+              browser_factory: Any = None) -> App:
+    from .compliance import ComplianceChecker
+    from .staging import StagingService
     handlers: dict[str, ActionHandler] = {}
+    compliance = ComplianceChecker()
+    staging = StagingService(store, miaoshou, settings, compliance) if miaoshou is not None else None
     if miaoshou is not None:
-        h = TiktokPublishViaMiaoshou(miaoshou)
+        h = TiktokPublishViaMiaoshou(miaoshou, staging, compliance)
         handlers[h.action] = h
 
     # 功能6：内部平台浏览器流程。browser_factory 让执行器和 MCP server
     # 用同一套浏览器资料目录（也就是同一份登录状态）。
     if settings.platforms:
-        def browser_factory(platform):
-            from .platform_browser import PlatformBrowser
-            return PlatformBrowser(platform, chrome_path=settings.browser.chrome_path)
-
-        flow = BrowserFlow(settings, browser_factory, EVIDENCE_ROOT)
+        flow = BrowserFlow(settings, browser_factory or default_browser_factory(settings), EVIDENCE_ROOT)
         handlers[flow.action] = flow
 
     board = BoardSync(store, feishu, settings.feishu)
     tasks = TaskService(store, board)
-
-    # 功能3：初始化 SOP 管理器。优先用 [skills] dirs 配置的目录，
-    # 未配置时回退到项目内置的 skills/ 目录。
-    sop_dirs = [str(d) for d in settings.skill_dirs] or [str(PROJECT_ROOT / "skills")]
-    sops = SOPManager(sop_dirs)
 
     def on_change(p: Proposal) -> None:
         board.enqueue_proposal(p)
@@ -85,7 +88,8 @@ def build_app(settings: Settings, store: Store, feishu: FeishuClient, miaoshou: 
                 blocker=details or None,
             )
 
-    executor = Executor(store, settings.limits, handlers, on_change=on_change)
+    executor = Executor(store, settings.limits, handlers, on_change=on_change,
+                        shop_timezones=settings.shop_timezones)
 
     followups = FollowupService(store, feishu, handlers, settings.feishu.owner_open_id)
 
@@ -104,6 +108,10 @@ def build_app(settings: Settings, store: Store, feishu: FeishuClient, miaoshou: 
                           "outbound", p.task_id)
 
     approvals = ApprovalService(store, settings, feishu, on_approved=on_approved, on_change=on_change)
+    approvals.handlers = handlers
+    from .shadow import ShadowService
+    shadow = ShadowService(store, settings, handlers)
+    approvals.shadow = shadow
     proposals = ProposalService(store, settings, handlers)
     return App(settings, store, feishu, board, tasks, proposals, approvals, executor, followups, handlers,
-               sops, miaoshou)
+               miaoshou, staging, compliance, shadow)

@@ -160,9 +160,9 @@ def test_capture_page_tool_integration(tmp_path, env):
     tools = [t["name"] for t in server.list_tools()]
     assert "capture_page" in tools
 
-    # 非白名单域名应返回错误而不是抛异常
-    result, is_error = server.call("capture_page", {"url": "https://evil.com/x"})
-    assert not is_error
+    # 非白名单域名作为工具错误返回给 agent，而不是让 MCP server 抛异常
+    result, is_error = server.call("capture_page", {"url": "https://evil.com/x", "purpose": "测试"})
+    assert is_error
     assert "不在白名单内" in result
 
 

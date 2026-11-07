@@ -13,12 +13,12 @@ import sys
 import socket
 from pathlib import Path
 
-from .config import PROJECT_ROOT
+from .paths import EVIDENCE_DIR, WORKSPACES_DIR
 
 MAX_BYTES = 20 * 1024 * 1024
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-EVIDENCE_ROOT = PROJECT_ROOT / "data" / "evidence"
-STAGING_ROOT = PROJECT_ROOT / "data" / "workspaces"
+EVIDENCE_ROOT = EVIDENCE_DIR
+STAGING_ROOT = WORKSPACES_DIR
 
 
 def _safe_name(name: str) -> str:
@@ -175,13 +175,15 @@ def start_chrome(chrome_path: str = "", user_data_dir: str = "", port: int = 922
             raise RuntimeError("找不到可用的 Chrome 调试端口")
     profile = Path(user_data_dir).expanduser() if user_data_dir else Path.home() / ".agent-chrome"
     profile.mkdir(parents=True, exist_ok=True)
-    args = ["-na", "Google Chrome", "--args", f"--remote-debugging-port={port}",
-            f"--user-data-dir={profile}", "--new-window", url]
+    # --no-first-run：全新的 profile 不弹「登录 Chrome」引导页和 Google 登录页（2026-11-02 调试时 agent 两次撞见）
+    chrome_args = [f"--remote-debugging-port={port}", f"--user-data-dir={profile}", "--no-first-run",
+                   "--no-default-browser-check", "--new-window", url]
     if chrome_path:
-        # 自定义可执行文件无法通过 open -na 选择；仍保持独立 profile。
-        args = [executable, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-                "--new-window", url]
-    subprocess.Popen(["/usr/bin/open", *args], stdin=subprocess.DEVNULL,
+        # 自定义可执行文件直接启动（open 只认 .app，交给它一个二进制路径起不来）；仍保持独立 profile
+        command = [executable, *chrome_args]
+    else:
+        command = ["/usr/bin/open", "-na", "Google Chrome", "--args", *chrome_args]
+    subprocess.Popen(command, stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return port
 

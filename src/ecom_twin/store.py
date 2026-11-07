@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_id TEXT,
     switch_log TEXT,
     origin_message_id TEXT,
-    origin_chat_id TEXT
+    origin_chat_id TEXT,
+    origin_chat_type TEXT,
+    transcript TEXT,
+    waiting TEXT
+);
+CREATE TABLE IF NOT EXISTS run_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT, scene TEXT, shop_key TEXT, runtime TEXT,
+    input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS task_queue (
     task_id TEXT PRIMARY KEY REFERENCES tasks(id),
@@ -81,7 +89,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     expires_at TEXT, approver TEXT, decided_at TEXT,
     reject_reason TEXT, reject_note TEXT,
     card_message_id TEXT, reminded INTEGER DEFAULT 0,
-    executed_at TEXT, result TEXT, created_at TEXT
+    executed_at TEXT, result TEXT, created_at TEXT, approvals TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_card ON proposals(card_message_id);
 CREATE TABLE IF NOT EXISTS executions (
@@ -158,7 +166,53 @@ CREATE TABLE IF NOT EXISTS recall_log (
     task_id TEXT,
     query TEXT,
     hits TEXT,
+    created_at TEXT,
+    command TEXT
+);
+CREATE TABLE IF NOT EXISTS staging_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    shop_key TEXT,
+    change_type TEXT NOT NULL,
+    before TEXT,
+    after TEXT,
+    proposal_id TEXT,
     created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS staging_links (
+    common_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    platform_id TEXT NOT NULL,
+    PRIMARY KEY (common_id, platform)
+);
+CREATE TABLE IF NOT EXISTS intake_buffer (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT, chat_type TEXT, sender_id TEXT, message_id TEXT, text TEXT, received_at TEXT,
+    payload TEXT
+);
+CREATE TABLE IF NOT EXISTS task_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL, message_id TEXT, chat_id TEXT, sender_id TEXT, text TEXT,
+    layer TEXT, drive INTEGER, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS merge_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT, message_ids TEXT, task_id TEXT, layer TEXT, drive INTEGER, reason TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS outbound_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT, chat_id TEXT, reply_to TEXT, kind TEXT, delivered_to TEXT, text TEXT, message_id TEXT,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS shadow_actuals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL, shop_key TEXT, object_key TEXT NOT NULL, actual TEXT, at TEXT, source TEXT
+);
+CREATE TABLE IF NOT EXISTS metrics_daily (
+    day TEXT NOT NULL, shop_key TEXT NOT NULL, sku TEXT NOT NULL, metrics TEXT,
+    PRIMARY KEY (day, shop_key, sku)
 );
 CREATE TABLE IF NOT EXISTS memory_drafts (
     id TEXT PRIMARY KEY,
@@ -170,7 +224,15 @@ CREATE TABLE IF NOT EXISTS memory_drafts (
     reason TEXT,
     status TEXT NOT NULL,
     created_at TEXT,
-    decided_at TEXT
+    decided_at TEXT,
+    mode TEXT,
+    target_name TEXT,
+    target_section TEXT,
+    old_text TEXT,
+    why TEXT,
+    evidence TEXT,
+    final TEXT,
+    note TEXT
 );
 """
 
@@ -222,6 +284,16 @@ class _LockedConnection:
             self._lock.release()
 
 
+
+def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
+    """{"title": .., "sku_prices_cny": {"红色": 12}} → {"title": .., "sku_prices_cny.红色": 12}，逐字段对比用。"""
+    if not isinstance(value, dict):
+        return {prefix: value} if prefix else {}
+    out: dict[str, Any] = {}
+    for key, inner in value.items():
+        out.update(_flatten(inner, f"{prefix}.{key}" if prefix else str(key)))
+    return out
+
 class Store:
     def __init__(self, db_path: str | Path):
         if str(db_path) != ":memory:":
@@ -232,32 +304,41 @@ class Store:
         if str(db_path) != ":memory:":
             conn.execute("PRAGMA journal_mode=WAL")  # 读写不互相阻塞
         self.conn = _LockedConnection(conn)
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        # 逐条建表建索引：旧表缺列时建索引会失败，先跳过，补完列再建
+        deferred = []
+        for statement in (st.strip() for st in SCHEMA.split(";")):
+            if not statement:
+                continue
+            try:
+                self.conn.execute(statement)
+            except sqlite3.OperationalError:
+                deferred.append(statement)
         self._migrate()
-        self._backfill_message_log()
-
-    # 旧版本数据库升级：CREATE TABLE IF NOT EXISTS 不会给已有表加列，这里补齐后加的列
-    _ADDED_COLUMNS = {
-        "tasks": {
-            "tokens_in": "INTEGER DEFAULT 0",
-            "tokens_out": "INTEGER DEFAULT 0",
-            "session_id": "TEXT",
-            "switch_log": "TEXT",
-            "origin_message_id": "TEXT",
-            "origin_chat_id": "TEXT",
-        },
-        "steps": {"evidence": "TEXT"},
-    }
+        for statement in deferred:
+            self.conn.execute(statement)
+        self.conn.commit()
+        self.conn.commit()
 
     def _migrate(self) -> None:
-        """检查并补齐旧数据库缺失的列。"""
-        for table, columns in self._ADDED_COLUMNS.items():
+        """旧版本数据库升级：对照当前 SCHEMA，给已有表补上缺的列（CREATE TABLE IF NOT EXISTS 不会补列）。
+
+        参照表结构取自一个用 SCHEMA 新建的内存库，所以以后加列只要改 SCHEMA，不用另外登记。
+        补的列去掉 NOT NULL / 主键约束（ALTER TABLE ADD COLUMN 不支持），保留默认值。
+        """
+        ref = sqlite3.connect(":memory:")
+        ref.executescript(SCHEMA)
+        tables = [r[0] for r in ref.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                  if not r[0].startswith("sqlite_")]
+        for table in tables:
             existing = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()}
-            for name, ddl in columns.items():
+            for _, name, col_type, _, default, _ in ref.execute(f"PRAGMA table_info({table})").fetchall():
                 if name not in existing:
+                    ddl = f"ALTER TABLE {table} ADD COLUMN {name} {col_type or ''}"
+                    if default is not None:
+                        ddl += f" DEFAULT {default}"
                     with self.conn:
-                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                        self.conn.execute(ddl)
+        ref.close()
 
     # ---- id ----
     def next_id(self, prefix: str) -> str:
@@ -271,29 +352,30 @@ class Store:
         return f"{prefix}-{value:04d}"
 
     # ---- tasks ----
+    def _upsert(self, table: str, row: dict[str, Any], keep_on_update: tuple[str, ...] = ("id",)) -> None:
+        """按列名写入（不依赖列顺序：旧库补列后列顺序可能和 SCHEMA 不同）。"""
+        cols = list(row)
+        updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c not in keep_on_update)
+        with self.conn:
+            self.conn.execute(
+                f"INSERT INTO {table}({', '.join(cols)}) VALUES({', '.join('?' * len(cols))}) "
+                f"ON CONFLICT(id) DO UPDATE SET {updates}", tuple(row.values()))
+
     def save_task(self, task: Task) -> Task:
         now = utcnow()
         task.created_at = task.created_at or now
         task.updated_at = now
-        with self.conn:
-            self.conn.execute(
-                """INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET title=excluded.title, status=excluded.status,
-                scene=excluded.scene, shop_key=excluded.shop_key, anchors=excluded.anchors,
-                owner=excluded.owner, current_step=excluded.current_step, runtime=excluded.runtime,
-                conclusion=excluded.conclusion, blocker=excluded.blocker,
-                updated_at=excluded.updated_at, last_heartbeat=excluded.last_heartbeat,
-                tokens_in=excluded.tokens_in, tokens_out=excluded.tokens_out,
-                session_id=excluded.session_id, switch_log=excluded.switch_log,
-                origin_message_id=excluded.origin_message_id, origin_chat_id=excluded.origin_chat_id""",
-                (
-                    task.id, task.title, task.source.value, task.scene, task.status.value,
-                    task.shop_key, _j(task.anchors), task.owner, task.current_step, task.runtime,
-                    task.conclusion, task.blocker, _ts(task.created_at), _ts(task.updated_at),
-                    _ts(task.last_heartbeat), task.tokens_in, task.tokens_out, task.session_id,
-                    task.switch_log, task.origin_message_id, task.origin_chat_id,
-                ),
-            )
+        self._upsert("tasks", {
+            "id": task.id, "title": task.title, "source": task.source.value, "scene": task.scene,
+            "status": task.status.value, "shop_key": task.shop_key, "anchors": _j(task.anchors), "owner": task.owner,
+            "current_step": task.current_step, "runtime": task.runtime, "conclusion": task.conclusion,
+            "blocker": task.blocker, "created_at": _ts(task.created_at), "updated_at": _ts(task.updated_at),
+            "last_heartbeat": _ts(task.last_heartbeat), "tokens_in": task.tokens_in, "tokens_out": task.tokens_out,
+            "session_id": task.session_id, "switch_log": task.switch_log,
+            "origin_message_id": task.origin_message_id, "origin_chat_id": task.origin_chat_id,
+            "origin_chat_type": task.origin_chat_type, "transcript": task.transcript,
+            "waiting": task.waiting,
+        }, keep_on_update=("id", "source", "created_at"))
         return task
 
     def get_task(self, task_id: str) -> Task | None:
@@ -310,7 +392,8 @@ class Store:
             last_heartbeat=_dt(row["last_heartbeat"]), tokens_in=row["tokens_in"] or 0,
             tokens_out=row["tokens_out"] or 0, session_id=row["session_id"] or "",
             switch_log=row["switch_log"] or "", origin_message_id=row["origin_message_id"] or "",
-            origin_chat_id=row["origin_chat_id"] or "",
+            origin_chat_id=row["origin_chat_id"] or "", origin_chat_type=row["origin_chat_type"] or "",
+            transcript=row["transcript"] or "", waiting=row["waiting"] or "",
         )
 
     # ---- 任务队列 ----
@@ -340,10 +423,23 @@ class Store:
             result['state'], result['started_at'] = 'running', now
             return result
 
+    def get_task_queue(self, task_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM task_queue WHERE task_id=?", (task_id,)).fetchone()
+        return dict(row) if row else None
+
     def finish_task_queue(self, task_id: str, error: str = "") -> None:
+        # 只结束仍在运行的这一轮：运行期间又来了新消息时，入队已把它改回 queued，不能被这里覆盖成 done
         with self.conn:
-            self.conn.execute("UPDATE task_queue SET state='done', finished_at=?, error=? WHERE task_id=?",
-                              (_ts(utcnow()), error[:500], task_id))
+            self.conn.execute("UPDATE task_queue SET state='done', finished_at=?, error=? "
+                              "WHERE task_id=? AND state='running'", (_ts(utcnow()), error[:500], task_id))
+
+    def recover_interrupted_queue(self) -> list[dict[str, Any]]:
+        """服务启动时：上次停机前还在跑（state=running）的那几轮重新排队，返回它们。只在单个 serve 启动时调用。"""
+        with self.conn:
+            rows = [dict(r) for r in self.conn.execute("SELECT * FROM task_queue WHERE state='running'").fetchall()]
+            self.conn.execute("UPDATE task_queue SET state='queued', started_at=NULL, "
+                              "error='服务重启时这一轮被中断，已重新排队' WHERE state='running'")
+        return rows
 
     def cancel_task_queue(self, task_id: str) -> bool:
         with self.conn:
@@ -406,23 +502,15 @@ class Store:
     # ---- proposals ----
     def save_proposal(self, p: Proposal) -> Proposal:
         p.created_at = p.created_at or utcnow()
-        with self.conn:
-            self.conn.execute(
-                """INSERT INTO proposals VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET current=excluded.current, evidence=excluded.evidence,
-                consequences=excluded.consequences, status=excluded.status, approver=excluded.approver,
-                decided_at=excluded.decided_at, reject_reason=excluded.reject_reason,
-                reject_note=excluded.reject_note, card_message_id=excluded.card_message_id,
-                reminded=excluded.reminded, executed_at=excluded.executed_at, result=excluded.result""",
-                (
-                    p.id, p.task_id, p.shop_key, p.action, _j(p.target), _j(p.desired), p.rationale,
-                    _j(p.current), _j(p.evidence), _j(p.consequences), p.risk, p.method.value,
-                    p.status.value, _ts(p.expires_at), p.approver, _ts(p.decided_at),
-                    p.reject_reason.value if p.reject_reason else None, p.reject_note,
-                    p.card_message_id, int(p.reminded), _ts(p.executed_at), _j(p.result),
-                    _ts(p.created_at),
-                ),
-            )
+        self._upsert("proposals", {
+            "id": p.id, "task_id": p.task_id, "shop_key": p.shop_key, "action": p.action, "target": _j(p.target),
+            "desired": _j(p.desired), "rationale": p.rationale, "current": _j(p.current), "evidence": _j(p.evidence),
+            "consequences": _j(p.consequences), "risk": p.risk, "method": p.method.value, "status": p.status.value,
+            "expires_at": _ts(p.expires_at), "approver": p.approver, "decided_at": _ts(p.decided_at),
+            "reject_reason": p.reject_reason.value if p.reject_reason else None, "reject_note": p.reject_note,
+            "card_message_id": p.card_message_id, "reminded": int(p.reminded), "executed_at": _ts(p.executed_at),
+            "result": _j(p.result), "created_at": _ts(p.created_at), "approvals": _j(p.approvals),
+        }, keep_on_update=("id", "task_id", "shop_key", "action", "rationale", "expires_at", "created_at"))
         return p
 
     def _row_to_proposal(self, r: sqlite3.Row) -> Proposal:
@@ -437,11 +525,20 @@ class Store:
             reject_note=r["reject_note"] or "", card_message_id=r["card_message_id"] or "",
             reminded=bool(r["reminded"]), executed_at=_dt(r["executed_at"]),
             result=json.loads(r["result"] or "{}"), created_at=_dt(r["created_at"]),
+            approvals=json.loads(r["approvals"] or "[]"),
         )
 
     def get_proposal(self, proposal_id: str) -> Proposal | None:
         row = self.conn.execute("SELECT * FROM proposals WHERE id=?", (proposal_id,)).fetchone()
         return self._row_to_proposal(row) if row else None
+
+    def proposals_for_task(self, task_id: str) -> list[Proposal]:
+        rows = self.conn.execute("SELECT * FROM proposals WHERE task_id=? ORDER BY id", (task_id,))
+        return [self._row_to_proposal(r) for r in rows.fetchall()]
+
+    def proposals_by_card(self, message_id: str) -> list[Proposal]:
+        rows = self.conn.execute("SELECT * FROM proposals WHERE card_message_id=? ORDER BY id", (message_id,))
+        return [self._row_to_proposal(r) for r in rows.fetchall()]
 
     def find_proposal_by_card(self, message_id: str) -> Proposal | None:
         row = self.conn.execute("SELECT * FROM proposals WHERE card_message_id=?", (message_id,)).fetchone()
@@ -488,6 +585,18 @@ class Store:
                 "INSERT INTO audit_log(entity, entity_id, event, actor, detail, created_at) VALUES(?,?,?,?,?,?)",
                 (entity, entity_id, event, actor, _j(detail), _ts(utcnow())),
             )
+
+    def audit_log(self, entities: tuple[str, ...], limit: int = 200) -> list[dict]:
+        """控制台「变更记录」：按实体类型取最近的审计记录，新的在前。"""
+        marks = ",".join("?" * len(entities))
+        rows = self.conn.execute(
+            f"SELECT * FROM audit_log WHERE entity IN ({marks}) ORDER BY id DESC LIMIT ?", (*entities, limit))
+        return [{**dict(r), "detail": json.loads(r["detail"] or "null")} for r in rows.fetchall()]
+
+    def audits_by_event(self, event: str, limit: int = 100) -> list[dict]:
+        """某一类审计记录，新的在前（控制台「存疑」列表用）。"""
+        rows = self.conn.execute("SELECT * FROM audit_log WHERE event=? ORDER BY id DESC LIMIT ?", (event, limit))
+        return [dict(r) for r in rows.fetchall()]
 
     def audit_events(self, entity_id: str) -> list[str]:
         rows = self.conn.execute("SELECT event FROM audit_log WHERE entity_id=? ORDER BY id", (entity_id,))
@@ -566,6 +675,26 @@ class Store:
     def task_for_message(self, message_id: str) -> str | None:
         row = self.conn.execute("SELECT task_id FROM report_links WHERE message_id=?", (message_id,)).fetchone()
         return row[0] if row else None
+
+    # 进任务的方式是确定的（随任务一起创建、回复、锚点），这样的消息被人接话时可以直接落到这个任务。
+    # 模型推断并进去的（等待唤醒、主题、同类）不算：推断错一次，拿它当落点就会一路错并下去（数字分身 WS-405）
+    HARD_MERGE_LAYERS = ("新任务", "回复", "锚点")
+
+    def task_for_reply(self, message_id: str) -> tuple[str, str] | None:
+        """被回复的这条消息属于哪个任务、凭什么：分身发的 / 任务的触发消息 / 确定方式进任务的消息。"""
+        row = self.conn.execute("SELECT task_id FROM report_links WHERE message_id=?", (message_id,)).fetchone()
+        if row:
+            return row[0], "分身发出的消息"
+        row = self.conn.execute("SELECT id FROM tasks WHERE origin_message_id=? ORDER BY created_at DESC",
+                                (message_id,)).fetchone()
+        if row:
+            return row[0], "任务的触发消息"
+        marks = ",".join("?" * len(self.HARD_MERGE_LAYERS))
+        row = self.conn.execute(f"SELECT task_id FROM task_messages WHERE message_id=? AND layer IN ({marks}) "
+                                "ORDER BY id DESC", (message_id, *self.HARD_MERGE_LAYERS)).fetchone()
+        if row:
+            return row[0], "已经在任务里的消息"
+        return None
 
     def task_for_origin_message(self, message_id: str) -> str | None:
         row = self.conn.execute("SELECT id FROM tasks WHERE origin_message_id=?", (message_id,)).fetchone()
@@ -654,10 +783,28 @@ class Store:
         return [dict(r) for r in rows.fetchall()]
 
     # ---- 记忆：召回记录、记忆草稿 ----
-    def log_recall(self, task_id: str, query: str, hits: list[str]) -> None:
+    def log_recall(self, task_id: str, query: str, hits: list[str], command: str = "search") -> None:
+        """command：read（按名字读全文，query 是名字）/ search（兜底检索，query 是检索词）。"""
         with self.conn:
-            self.conn.execute("INSERT INTO recall_log(task_id, query, hits, created_at) VALUES(?,?,?,?)",
-                              (task_id, query, _j(hits), _ts(utcnow())))
+            self.conn.execute("INSERT INTO recall_log(task_id, query, hits, created_at, command) VALUES(?,?,?,?,?)",
+                              (task_id, query, _j(hits), _ts(utcnow()), command))
+
+    def recall_summary(self, limit: int = 100) -> list[dict]:
+        """按任务汇总召回：调用几次（读 / 检索）、未命中几次、最近一次。对照数字分身的「按轮次」。"""
+        rows = self.conn.execute(
+            "SELECT r.task_id, COUNT(*) AS calls, SUM(r.command='read') AS reads, SUM(r.command!='read') AS searches, "
+            "SUM(r.hits='[]' OR r.hits IS NULL) AS misses, MAX(r.created_at) AS last_at, t.title "
+            "FROM recall_log r LEFT JOIN tasks t ON t.id=r.task_id GROUP BY r.task_id ORDER BY last_at DESC LIMIT ?",
+            (limit,))
+        return [dict(r) for r in rows.fetchall()]
+
+    def prune_recalls(self, days: float, now: datetime | None = None) -> int:
+        """删掉超过保留期的召回记录，返回删了几条。days <= 0 不删。"""
+        if days <= 0:
+            return 0
+        cutoff = _ts((now or utcnow()) - timedelta(days=days))
+        with self.conn:
+            return self.conn.execute("DELETE FROM recall_log WHERE created_at < ?", (cutoff,)).rowcount
 
     def list_recalls(self, task_id: str | None = None) -> list[dict]:
         if task_id:
@@ -666,16 +813,29 @@ class Store:
             rows = self.conn.execute("SELECT * FROM recall_log ORDER BY id")
         return [{**dict(r), "hits": json.loads(r["hits"])} for r in rows.fetchall()]
 
+    _DRAFT_FIELDS = ("mode", "target_name", "target_section", "old_text", "body")
+
     def add_memory_draft(self, draft: dict[str, Any]) -> str:
         draft_id = self.next_id("M")
         with self.conn:
             self.conn.execute(
-                """INSERT INTO memory_drafts(id, task_id, name, description, type, body, reason, status, created_at)
-                VALUES(?,?,?,?,?,?,?,'待审核',?)""",
+                """INSERT INTO memory_drafts(id, task_id, name, description, type, body, reason, status, created_at,
+                    mode, target_name, target_section, old_text, why, evidence)
+                VALUES(?,?,?,?,?,?,?,'待审核',?,?,?,?,?,?,?)""",
                 (draft_id, draft.get("task_id"), draft["name"], draft.get("description", ""),
-                 draft.get("type", "experience"), draft.get("body", ""), draft.get("reason", ""), _ts(utcnow())),
+                 draft.get("type", "experience"), draft.get("body", ""), draft.get("reason", ""), _ts(utcnow()),
+                 draft.get("mode", "create"), draft.get("target_name", ""), draft.get("target_section", ""),
+                 draft.get("old_text", ""), draft.get("why", draft.get("reason", "")), draft.get("evidence", "")),
             )
         return draft_id
+
+    def find_memory_draft(self, draft: dict[str, Any]) -> str | None:
+        """同一目标的相同草稿还在待审核：返回它的编号（重试的 agent 不会堆出重复草稿）。"""
+        row = self.conn.execute(
+            "SELECT id FROM memory_drafts WHERE status='待审核' AND COALESCE(name,'')=? AND "
+            + " AND ".join(f"COALESCE({k},'')=?" for k in self._DRAFT_FIELDS),
+            (draft.get("name", ""), *(draft.get(k, "") for k in self._DRAFT_FIELDS))).fetchone()
+        return row["id"] if row else None
 
     def get_memory_draft(self, draft_id: str) -> dict | None:
         row = self.conn.execute("SELECT * FROM memory_drafts WHERE id=?", (draft_id,)).fetchone()
@@ -685,10 +845,23 @@ class Store:
         rows = self.conn.execute("SELECT * FROM memory_drafts WHERE status=? ORDER BY id", (status,))
         return [dict(r) for r in rows.fetchall()]
 
-    def decide_memory_draft(self, draft_id: str, status: str) -> None:
+    def draft_stats(self) -> dict[str, Any]:
+        """草稿质量：待审、已采纳（其中改过再采纳的）、已驳回。改动率高说明 agent 写的草稿不合用，该调它的提示词。"""
+        row = self.conn.execute(
+            "SELECT SUM(status='待审核') AS pending, SUM(status='已采纳') AS adopted, "
+            "SUM(status='已采纳' AND final IS NOT NULL) AS edited, SUM(status='已驳回') AS rejected FROM memory_drafts"
+        ).fetchone()
+        stats = {k: int(row[k] or 0) for k in ("pending", "adopted", "edited", "rejected")}
+        decided = stats["adopted"] + stats["rejected"]
+        stats["edit_rate"] = round(stats["edited"] / stats["adopted"], 3) if stats["adopted"] else None
+        stats["reject_rate"] = round(stats["rejected"] / decided, 3) if decided else None
+        return stats
+
+    def decide_memory_draft(self, draft_id: str, status: str, final: dict | None = None, note: str = "") -> None:
+        """final：采纳前人工改过的字段（原稿不覆盖，另存一份）；note：驳回原因。"""
         with self.conn:
-            self.conn.execute("UPDATE memory_drafts SET status=?, decided_at=? WHERE id=?",
-                              (status, _ts(utcnow()), draft_id))
+            self.conn.execute("UPDATE memory_drafts SET status=?, decided_at=?, final=?, note=? WHERE id=?",
+                              (status, _ts(utcnow()), _j(final) if final else None, note, draft_id))
 
     def rejected_proposals_since(self, since: datetime) -> list[Proposal]:
         rows = self.conn.execute(
@@ -696,4 +869,219 @@ class Store:
             (ProposalStatus.REJECTED.value, _ts(since)),
         )
         return [self._row_to_proposal(r) for r in rows.fetchall()]
+
+    # ---- 采集箱暂存区改动（发布时汇总进审批卡片） ----
+    def add_staging_change(self, task_id: str, object_type: str, object_id: str, change_type: str,
+                           before: Any = None, after: Any = None, shop_key: str = "") -> None:
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO staging_changes(task_id, object_type, object_id, shop_key, change_type, before, after,
+                created_at) VALUES(?,?,?,?,?,?,?,?)""",
+                (task_id, object_type, str(object_id), shop_key, change_type, _j(before), _j(after), _ts(utcnow())),
+            )
+
+    def staging_changes_for(self, object_type: str, object_ids: list[str]) -> list[dict]:
+        if not object_ids:
+            return []
+        marks = ",".join("?" * len(object_ids))
+        rows = self.conn.execute(
+            f"SELECT * FROM staging_changes WHERE object_type=? AND object_id IN ({marks}) ORDER BY id",
+            (object_type, *[str(o) for o in object_ids]))
+        return [{**dict(r), "before": json.loads(r["before"] or "null"), "after": json.loads(r["after"] or "null")}
+                for r in rows.fetchall()]
+
+    def listing_diffs(self, task_id: str | None = None, limit: int = 100) -> list[dict]:
+        """控制台「Listing 对比」：按商品汇总暂存区改动 —— 每个字段第一次改之前的值 → 最后改成的值，外加改动时间线。"""
+        sql, args = "SELECT * FROM staging_changes", []
+        if task_id:
+            sql += " WHERE object_id IN (SELECT object_id FROM staging_changes WHERE task_id=?)"
+            args.append(task_id)
+        rows = [{**dict(r), "before": json.loads(r["before"] or "null"), "after": json.loads(r["after"] or "null")}
+                for r in self.conn.execute(sql + " ORDER BY id", args).fetchall()]
+        items: dict[tuple, dict] = {}
+        for r in rows:
+            item = items.setdefault((r["object_type"], r["object_id"]), {
+                "object_type": r["object_type"], "object_id": r["object_id"], "shop_key": r["shop_key"] or "",
+                "tasks": [], "proposals": [], "fields": {}, "changes": [], "updated_at": r["created_at"]})
+            item["shop_key"] = item["shop_key"] or r["shop_key"] or ""
+            for key, value in (("tasks", r["task_id"]), ("proposals", r["proposal_id"])):
+                if value and value not in item[key]:
+                    item[key].append(value)
+            item["changes"].append({"at": r["created_at"], "type": r["change_type"], "task_id": r["task_id"],
+                                    "proposal_id": r["proposal_id"], "before": r["before"], "after": r["after"]})
+            item["updated_at"] = r["created_at"]
+            if r["before"] is None:  # 采集、认领、绑店只有结果没有「改前」，只进时间线，不算字段改动
+                continue
+            before, after = _flatten(r["before"]), _flatten(r["after"])
+            for field in after.keys() | before.keys():
+                slot = item["fields"].setdefault(field, {"field": field, "before": before.get(field), "after": None})
+                if field in after:
+                    slot["after"] = after[field]
+        out = sorted(items.values(), key=lambda i: i["updated_at"], reverse=True)[:limit]
+        for item in out:  # 只留真改过的字段（绕一圈改回原样的不算）
+            item["fields"] = [f for f in item["fields"].values() if f["after"] is not None and f["after"] != f["before"]]
+        return out
+
+    def mark_staging_included(self, ids: list[int], proposal_id: str) -> None:
+        with self.conn:
+            for i in ids:
+                self.conn.execute("UPDATE staging_changes SET proposal_id=? WHERE id=?", (proposal_id, i))
+
+    def count_staging_writes(self, task_id: str) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM staging_changes WHERE task_id=?", (task_id,)).fetchone()[0]
+
+    def link_staging(self, common_id: str, platform: str, platform_id: str) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO staging_links VALUES(?,?,?)",
+                              (str(common_id), platform, str(platform_id)))
+
+    def common_ids_for(self, platform: str, platform_ids: list[str]) -> list[str]:
+        if not platform_ids:
+            return []
+        marks = ",".join("?" * len(platform_ids))
+        rows = self.conn.execute(
+            f"SELECT common_id FROM staging_links WHERE platform=? AND platform_id IN ({marks})",
+            (platform, *[str(p) for p in platform_ids]))
+        return [r[0] for r in rows.fetchall()]
+
+    # ---- 消息入口：攒批缓冲 ----
+    # 消息里除正文外还要带到处理阶段的字段：事件自带的 parent_id、图片附件
+    _BUFFER_EXTRAS = ("parent_id", "root_id", "image_key", "image_keys", "prompt_content")
+
+    def buffer_add(self, msg: dict[str, Any], received_at: datetime) -> None:
+        extras = {k: msg[k] for k in self._BUFFER_EXTRAS if msg.get(k)}
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO intake_buffer(chat_id, chat_type, sender_id, message_id, text, received_at, payload) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (msg.get("chat_id", ""), msg.get("chat_type", ""), msg.get("sender_id", ""), msg.get("message_id", ""),
+                 msg.get("content", ""), _ts(received_at), json.dumps(extras, ensure_ascii=False) if extras else None))
+
+    def buffer_groups(self) -> list[list[dict]]:
+        """按（会话, 发送人）分组的待处理消息，组内按收到顺序。"""
+        rows = [dict(r) for r in self.conn.execute("SELECT * FROM intake_buffer ORDER BY id").fetchall()]
+        groups: dict[tuple, list[dict]] = {}
+        for r in rows:
+            r.update(json.loads(r.pop("payload") or "{}"))
+            groups.setdefault((r["chat_id"], r["sender_id"]), []).append(r)
+        return list(groups.values())
+
+    def buffer_delete(self, ids: list[int]) -> None:
+        with self.conn:
+            for i in ids:
+                self.conn.execute("DELETE FROM intake_buffer WHERE id=?", (i,))
+
+    # ---- 任务消息、合并判定、代发记录 ----
+    def add_task_message(self, task_id: str, msg: dict[str, Any], layer: str, drive: bool) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO task_messages(task_id, message_id, chat_id, sender_id, text, layer, drive, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (task_id, msg.get("message_id"), msg.get("chat_id"), msg.get("sender_id"), msg.get("text"), layer,
+                 int(drive), _ts(utcnow())))
+
+    def task_messages(self, task_id: str) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM task_messages WHERE task_id=? ORDER BY id", (task_id,))
+        return [dict(r) for r in rows.fetchall()]
+
+    def add_merge_decision(self, chat_id: str, message_ids: list[str], task_id: str | None, layer: str,
+                           drive: bool, reason: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO merge_decisions(chat_id, message_ids, task_id, layer, drive, reason, created_at) VALUES(?,?,?,?,?,?,?)",
+                (chat_id, _j(message_ids), task_id, layer, int(drive), reason, _ts(utcnow())))
+
+    def merge_decisions(self, limit: int = 200) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM merge_decisions ORDER BY id DESC LIMIT ?", (limit,))
+        return [{**dict(r), "message_ids": json.loads(r["message_ids"] or "[]")} for r in rows.fetchall()]
+
+    def add_outbound(self, task_id: str, chat_id: str, reply_to: str, kind: str, delivered_to: str, text: str,
+                     message_id: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outbound_messages(task_id, chat_id, reply_to, kind, delivered_to, text, message_id, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (task_id, chat_id, reply_to, kind, delivered_to, text, message_id, _ts(utcnow())))
+
+    def outbound_messages(self, task_id: str | None = None) -> list[dict]:
+        if task_id:
+            rows = self.conn.execute("SELECT * FROM outbound_messages WHERE task_id=? ORDER BY id", (task_id,))
+        else:
+            rows = self.conn.execute("SELECT * FROM outbound_messages ORDER BY id DESC LIMIT 500")
+        return [dict(r) for r in rows.fetchall()]
+
+    def list_tasks(self, statuses_excluded: list[str] | None = None, chat_id: str | None = None,
+                   since: datetime | None = None) -> list[Task]:
+        sql, args = "SELECT id FROM tasks WHERE 1=1", []
+        if statuses_excluded:
+            sql += f" AND status NOT IN ({','.join('?' * len(statuses_excluded))})"
+            args += statuses_excluded
+        if chat_id:
+            sql += " AND origin_chat_id=?"
+            args.append(chat_id)
+        if since:
+            sql += " AND updated_at>=?"
+            args.append(_ts(since))
+        rows = self.conn.execute(sql + " ORDER BY updated_at DESC", args).fetchall()
+        return [self.get_task(r[0]) for r in rows]
+
+    # ---- 成本 ----
+    def add_usage(self, task: Task, runtime: str, input_tokens: int, output_tokens: int,
+                  cost_usd: float | None, at: datetime | None = None) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO run_usage(task_id, scene, shop_key, runtime, input_tokens, output_tokens, cost_usd, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (task.id, task.scene, task.shop_key, runtime, input_tokens, output_tokens, cost_usd,
+                 _ts(at or utcnow())))
+
+    def usage_summary(self, month: str, by: str = "runtime") -> list[dict]:
+        """某月（YYYY-MM）按 runtime / scene / shop_key 汇总 token 和费用。"""
+        assert by in ("runtime", "scene", "shop_key")
+        rows = self.conn.execute(
+            f"""SELECT COALESCE({by}, '') AS key, COUNT(DISTINCT task_id) AS tasks, SUM(input_tokens) AS input_tokens,
+            SUM(output_tokens) AS output_tokens, SUM(COALESCE(cost_usd, 0)) AS cost_usd,
+            SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS runs_without_cost
+            FROM run_usage WHERE substr(created_at, 1, 7)=? GROUP BY {by} ORDER BY cost_usd DESC""", (month,))
+        return [dict(r) for r in rows.fetchall()]
+
+    # ---- 看板：增量导出与反向同步 ----
+    def rows_after(self, table: str, last_id: int, limit: int = 200) -> list[dict]:
+        assert table in ("task_messages", "executions", "outbound_messages", "recall_log", "followups")
+        rows = self.conn.execute(f"SELECT * FROM {table} WHERE id>? ORDER BY id LIMIT ?", (last_id, limit))
+        return [dict(r) for r in rows.fetchall()]
+
+    def board_entity_for_record(self, record_id: str) -> tuple[str, str] | None:
+        row = self.conn.execute("SELECT entity, entity_id FROM board_records WHERE record_id=?", (record_id,)).fetchone()
+        return (row[0], row[1]) if row else None
+
+    # ---- 影子模式：人工实际操作 ----
+    def add_shadow_actual(self, action: str, shop_key: str, object_key: str, actual: str, at: datetime,
+                          source: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO shadow_actuals(action, shop_key, object_key, actual, at, source) VALUES(?,?,?,?,?,?)",
+                (action, shop_key, str(object_key), actual, _ts(at), source))
+
+    def shadow_actuals(self, action: str, shop_key: str, object_key: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM shadow_actuals WHERE action=? AND shop_key=? AND object_key=? ORDER BY at",
+            (action, shop_key, str(object_key)))
+        return [dict(r) for r in rows.fetchall()]
+
+    # ---- 日报数据 ----
+    def upsert_metrics(self, day: str, shop_key: str, sku: str, metrics: dict[str, float]) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO metrics_daily VALUES(?,?,?,?)", (day, shop_key, sku, _j(metrics)))
+
+    def metrics_for(self, day: str, shop_key: str) -> list[dict]:
+        rows = self.conn.execute("SELECT sku, metrics FROM metrics_daily WHERE day=? AND shop_key=? ORDER BY sku",
+                                 (day, shop_key))
+        return [{"sku": r[0], "metrics": json.loads(r[1])} for r in rows.fetchall()]
+
+    def metric_shops(self, day: str) -> list[str]:
+        rows = self.conn.execute("SELECT DISTINCT shop_key FROM metrics_daily WHERE day=? ORDER BY shop_key", (day,))
+        return [r[0] for r in rows.fetchall()]
+
+    def metric_value(self, day: str, shop_key: str, sku: str, key: str) -> float:
+        row = self.conn.execute("SELECT metrics FROM metrics_daily WHERE day=? AND shop_key=? AND sku=?",
+                                (day, shop_key, sku)).fetchone()
+        return float(json.loads(row[0]).get(key, 0)) if row else 0.0
 

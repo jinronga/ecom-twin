@@ -82,3 +82,17 @@ def test_apply_error_is_recorded_with_retryable_flag(env):
     assert outcome.status == ProposalStatus.FAILED
     assert env.app.store.get_proposal(p.id).result["retryable"] is True
     assert env.app.store.list_executions(p.id)[0]["outcome"] == "apply_error"
+
+
+
+def test_non_adapter_error_marks_proposal_failed_instead_of_raising(env):
+    """处理器抛出非适配器异常（例如浏览器流程的 PlatformError）时，提案记为失败，不卡在「执行中」。"""
+    from ecom_twin.platform_browser import PlatformError
+
+    def broken(_p):
+        raise PlatformError("页面结构变了")
+
+    env.app.handlers["miaoshou.tiktok.publish"].apply = broken
+    outcome = approve(env, env.submit())
+    assert outcome.status == ProposalStatus.FAILED and outcome.reason == "apply_error"
+    assert env.app.store.get_proposal(outcome.proposal_id).status == ProposalStatus.FAILED

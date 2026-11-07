@@ -20,6 +20,10 @@ class FakeMiaoshou:
         self.publish_error = None
         self.published_list = []
         self.shops = [{"shopId": 10001, "platform": "tiktok", "site": "US"}]
+        self.common = {}
+        self.listings = {}
+        self.writes = []
+        self._next_id = 100
 
     def list_shops(self, platform, site=""):
         return self.shops
@@ -28,7 +32,56 @@ class FakeMiaoshou:
         return self.published_list if status == "published" and page == 1 else []
 
     def tiktok_shop_item_info(self, detail_id, shop_id):
+        if str(detail_id) in self.listings:
+            entry = self.listings[str(detail_id)]
+            return {"ossMd5": entry["md5"], "claimToShopIds": entry["shops"], "shopCollectItemInfo": dict(entry["info"])}
         return {"shopCollectItemInfo": {"title": self.titles[str(detail_id)]}}
+
+    # ---- 采集箱暂存区（有状态的假实现） ----
+    def common_fetch_item(self, links):
+        mapping = {}
+        for link in links:
+            self._next_id += 1
+            cid = str(self._next_id)
+            self.common[cid] = {"md5": "c0", "detail": {"title": "源标题 " + cid, "price": 25.0,
+                                "skuMap": {"Blue;M": {"price": 25.0, "stock": 10}, "Red;M": {"price": 26.0, "stock": 3}},
+                                "imgUrls": ["a.jpg", "b.jpg"], "sourceList": [{"sourceItemUrl": link}]}}
+            mapping["src_" + cid] = int(cid)
+        return mapping
+
+    def common_detail(self, detail_id):
+        entry = self.common[str(detail_id)]
+        return {"ossMd5": entry["md5"], "editCommonCollectBoxDetail": dict(entry["detail"])}
+
+    def common_edit(self, detail_id, detail, oss_md5):
+        entry = self.common[str(detail_id)]
+        assert oss_md5 == entry["md5"], "ossMd5 不匹配"
+        entry["detail"], entry["md5"] = detail, entry["md5"] + "+"
+        self.writes.append(("common_edit", detail_id))
+
+    def common_claim(self, detail_ids, platform="tiktok"):
+        mapping = {}
+        for d in detail_ids:
+            tid = str(900 + int(d))
+            src = self.common[str(d)]["detail"]
+            skus = {k: {"price": 0.0, "stock": v.get("stock")} for k, v in src["skuMap"].items()}
+            self.listings[tid] = {"md5": "t0", "shops": [], "info": {"title": src["title"], "cid": "", "skuMap": skus,
+                                                                      "imgUrls": src["imgUrls"]}}
+            self.titles[tid] = src["title"]
+            mapping[str(d)] = int(tid)
+        return mapping
+
+    def tiktok_claim_to_shop(self, detail_ids, shop_ids):
+        for d in detail_ids:
+            self.listings[str(d)]["shops"] = sorted(set(self.listings[str(d)]["shops"]) | set(shop_ids))
+        self.writes.append(("claim_to_shop", tuple(detail_ids)))
+
+    def tiktok_shop_item_save(self, detail_id, shop_id, oss_md5, item_info):
+        entry = self.listings[str(detail_id)]
+        assert oss_md5 == entry["md5"], "ossMd5 不匹配"
+        entry["info"], entry["md5"] = item_info, entry["md5"] + "+"
+        self.titles[str(detail_id)] = item_info.get("title", "")
+        self.writes.append(("listing_save", detail_id))
 
     def tiktok_publish(self, detail_ids, shop_ids):
         if self.publish_error:

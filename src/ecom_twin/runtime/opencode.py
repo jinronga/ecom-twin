@@ -23,7 +23,13 @@ class OpenCodeRuntime(AgentRuntime):
             "$schema": "https://opencode.ai/config.json",
             "mcp": {name: {"type": "local", "command": [s["command"], *s.get("args", [])], "enabled": True}
                     for name, s in spec.mcp_servers.items()},
-            "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny"},
+            # bash 按命令放行：指定命令（带任意参数）allow，其余 deny；没给命令时整个 bash 都禁
+            "permission": {"edit": "deny", "webfetch": "deny",
+                           "bash": {**{f"{c} *": "allow" for c in spec.shell_commands}, "*": "deny"}
+                           if spec.shell_commands else "deny"},
+            # MCP 工具在 OpenCode 里叫 <server>_<tool>：先整体关掉每个 server，再逐个打开白名单里的
+            "tools": {**{f"{name}_*": False for name in spec.mcp_servers},
+                      **{f"{name}_{tool}": True for name, tools in spec.tools_by_server().items() for tool in tools}},
         }
         (spec.workdir / "opencode.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
         (spec.workdir / "AGENTS.md").write_text(spec.system_prompt, encoding="utf-8")

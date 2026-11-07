@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from typing import Any
 
 from .base import AgentRuntime, RunEvent, RunSpec
@@ -20,14 +21,24 @@ class ClaudeCodeRuntime(AgentRuntime):
         (spec.workdir / "mcp.json").write_text(
             json.dumps({"mcpServers": spec.mcp_servers}, ensure_ascii=False), encoding="utf-8"
         )
+        if spec.shell_commands and spec.shell_guard:
+            # 每条 Bash 命令执行前先过 shell_guard：拦 do shell script 这类绕过白名单的写法和禁止目标
+            hook = {"type": "command", "command": " ".join(shlex.quote(part) for part in spec.shell_guard)}
+            (spec.workdir / "settings.json").write_text(json.dumps(
+                {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook]}]}}, ensure_ascii=False), encoding="utf-8")
 
     def build_command(self, spec: RunSpec, resume_id: str | None = None) -> list[str]:
         cmd = [self.binary, "-p", spec.prompt, "--output-format", "stream-json", "--verbose",
                "--append-system-prompt", spec.system_prompt,
                "--mcp-config", str(spec.workdir / "mcp.json"), "--strict-mcp-config",
-               "--disallowedTools", ",".join(DISALLOWED_BUILTINS)]
-        if spec.allowed_tools:
-            cmd += ["--allowedTools", ",".join(spec.allowed_tools)]
+               "--disallowedTools", ",".join(b for b in DISALLOWED_BUILTINS
+                                             if not (b == "Bash" and spec.shell_commands))]
+        # 给 shell 时只按命令前缀放行（无人值守模式下名单外的命令直接被拒，&& 拼接的也会拆开校验）
+        allowed = spec.allowed_tools + [f"Bash({c}:*)" for c in spec.shell_commands]
+        if allowed:
+            cmd += ["--allowedTools", ",".join(allowed)]
+        if spec.shell_commands and spec.shell_guard:
+            cmd += ["--settings", str(spec.workdir / "settings.json")]
         if spec.model:
             cmd += ["--model", spec.model]
         if resume_id:

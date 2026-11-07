@@ -25,9 +25,11 @@ class CursorAgentRuntime(ClaudeCodeRuntime):
         cursor_dir.mkdir(exist_ok=True)
         (cursor_dir / "mcp.json").write_text(json.dumps({"mcpServers": spec.mcp_servers}, ensure_ascii=False),
                                              encoding="utf-8")
-        (cursor_dir / "cli.json").write_text(json.dumps(
-            {"permissions": {"allow": [f"Mcp({name}:*)" for name in spec.mcp_servers],
-                             "deny": ["Shell(*)", "Write(**)"]}}, ensure_ascii=False), encoding="utf-8")
+        allow = [f"Mcp({name}:{tool})" for name, tools in spec.tools_by_server().items() for tool in tools]
+        allow += [f"Shell({c})" for c in spec.shell_commands]  # 只放行指定命令；没给命令时整个 shell 都禁
+        deny = ["Write(**)"] + ([] if spec.shell_commands else ["Shell(*)"])
+        (cursor_dir / "cli.json").write_text(json.dumps({"permissions": {"allow": allow, "deny": deny}},
+                                                        ensure_ascii=False), encoding="utf-8")
         (spec.workdir / "AGENTS.md").write_text(spec.system_prompt, encoding="utf-8")
 
     def build_command(self, spec: RunSpec, resume_id: str | None = None) -> list[str]:

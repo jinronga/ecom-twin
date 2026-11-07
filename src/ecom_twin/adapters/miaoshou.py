@@ -19,11 +19,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import PROJECT_ROOT
+from ..paths import ADAPTERS_DIR
 from .base import AdapterError, ErrorCategory
 
 DEFAULT_BASE_URL = "https://openapi-erp.91miaoshou.com"
-PATHS_FILE = PROJECT_ROOT / "config" / "adapters" / "miaoshou.toml"
+PATHS_FILE = ADAPTERS_DIR / "miaoshou.toml"
 
 # 妙手错误码 -> 统一错误类别
 _ERROR_MAP: dict[str, ErrorCategory] = {
@@ -155,6 +155,32 @@ class MiaoshouClient:
     def common_collect_box_detail(self, detail_id: int) -> dict:
         """读取公共采集箱详情及编辑所需的 ``ossMd5``。"""
         return self.call("common_collect_box_detail", {"commonCollectBoxDetailId": int(detail_id)}) or {}
+    def common_detail(self, detail_id: int) -> dict:
+        """公共采集箱详情：返回 {"ossMd5": ..., "editCommonCollectBoxDetail": {...}}。"""
+        return self.call("common_detail", {"commonCollectBoxDetailId": detail_id}) or {}
+
+    # ---- 采集箱暂存区写入（买家看不到；按用户决定不逐次审批，全部留痕并列入发布卡片） ----
+    def common_fetch_item(self, links: list[str]) -> dict[str, int]:
+        """按货源链接采集到公共采集箱，返回 {货源ID: 公共采集箱ID}。"""
+        data = self.call("common_fetch_item", {"collectLinks": links}) or {}
+        return {str(k): int(v) for k, v in (data.get("sourceItemIdAndDetailIdMap") or {}).items()}
+
+    def common_edit(self, detail_id: int, detail: dict, oss_md5: str) -> Any:
+        """编辑公共采集箱商品。detail 是完整的 editCommonCollectBoxDetail（先读后改）。"""
+        return self.call("common_edit", {"commonCollectBoxDetailId": detail_id,
+                                         "editCommonCollectBoxDetail": detail, "ossMd5": oss_md5})
+
+    def common_claim(self, detail_ids: list[int], platform: str = "tiktok") -> dict[str, int]:
+        """认领到平台采集箱，返回 {公共采集箱ID: 平台采集箱ID}。"""
+        data = self.call("common_claim", {"detailSerialNumberPlatformList": [
+            {"detailId": d, "platform": platform, "serialNumber": 1} for d in detail_ids]}) or {}
+        mapping = (data.get("platformCollectBoxDetailIdMap") or {}).get(platform) or {}
+        return {str(k): int(v) for k, v in mapping.items()} if isinstance(mapping, dict) else {}
+
+    def tiktok_shop_item_save(self, detail_id: int, shop_id: int, oss_md5: str, item_info: dict) -> Any:
+        """保存 TikTok 采集箱商品的店铺模式信息（标题、SKU 价格、类目等）。item_info 必须是完整数据。"""
+        return self.call("tiktok_shop_item_save", {"ossMd5": oss_md5, "detailId": detail_id, "shopId": shop_id,
+                                                   "shopCollectItemInfo": item_info})
 
     # ---- Writer（只给执行器用） ----
     def tiktok_claim_to_shop(self, detail_ids: list[int], shop_ids: list[int]) -> Any:

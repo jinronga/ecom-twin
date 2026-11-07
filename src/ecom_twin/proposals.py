@@ -47,6 +47,7 @@ class ProposalService:
             method=handler.method,
             status=ProposalStatus.PENDING,
             expires_at=now + timedelta(hours=self.settings.expire_hours),
+            created_at=now,
         )
         handler.prepare(proposal)
 

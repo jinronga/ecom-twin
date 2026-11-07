@@ -26,13 +26,23 @@ class ExecutionOutcome:
     details: list[str] = field(default_factory=list)
 
 
-def check_common_limits(proposal: Proposal, limits: Limits, store: Store, now: datetime) -> list[str]:
-    """所有写操作通用的硬上限：店铺白名单、单店每日写操作次数。"""
+def local_day_start(now: datetime, tz_name: str | None) -> datetime:
+    """站点本地自然日的零点（返回带时区的时间）。没配时区按 UTC。"""
+    if not tz_name:
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    from zoneinfo import ZoneInfo
+    local = now.astimezone(ZoneInfo(tz_name))
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def check_common_limits(proposal: Proposal, limits: Limits, store: Store, now: datetime,
+                        shop_timezones: dict[str, str] | None = None) -> list[str]:
+    """所有写操作通用的硬上限：店铺白名单、单店每日写操作次数（按站点本地自然日）。"""
     violations = []
     # 内部平台（platform:<key>）的白名单是 [platforms] 配置本身，由 BrowserFlow.check_limits 检查
     if not proposal.shop_key.startswith("platform:") and proposal.shop_key not in limits.allowed_shops:
         violations.append(f"店铺 {proposal.shop_key} 不在可操作白名单内")
-    since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    since = local_day_start(now, (shop_timezones or {}).get(proposal.shop_key)).astimezone(now.tzinfo)
     used = store.count_writes_since(proposal.shop_key, since)
     if used >= limits.max_daily_writes_per_shop:
         violations.append(f"店铺 {proposal.shop_key} 今日写操作已达上限 {limits.max_daily_writes_per_shop}")
@@ -46,11 +56,13 @@ class Executor:
         limits: Limits,
         handlers: dict[str, ActionHandler],
         on_change: Callable[[Proposal], None] | None = None,
+        shop_timezones: dict[str, str] | None = None,
     ):
         self.store = store
         self.limits = limits
         self.handlers = handlers
         self.on_change = on_change or (lambda p: None)
+        self.shop_timezones = shop_timezones or {}
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
@@ -81,9 +93,10 @@ class Executor:
             if p.expires_at and now > p.expires_at:
                 return self._finish(p, ProposalStatus.EXPIRED, "expired")
 
+            # 处理器抛出的任何异常（适配器、浏览器流程、页面结构变化）都记为失败，提案不能卡在中间状态
             try:
                 snapshot = handler.snapshot(p)
-            except AdapterError as e:
+            except Exception as e:  # noqa: BLE001
                 return self._finish(p, ProposalStatus.FAILED, "snapshot_error", [str(e)])
 
             drift = handler.drifted(p, snapshot)
@@ -91,7 +104,7 @@ class Executor:
                 self.store.add_execution(p.id, p.shop_key, snapshot=snapshot, request=None, outcome="drift")
                 return self._finish(p, ProposalStatus.FAILED, "drift", drift)
 
-            violations = check_common_limits(p, self.limits, self.store, now) + handler.check_limits(p, self.limits)
+            violations = check_common_limits(p, self.limits, self.store, now, self.shop_timezones) + handler.check_limits(p, self.limits)
             if violations:
                 self.store.add_execution(p.id, p.shop_key, snapshot=snapshot, request=None, outcome="limit")
                 return self._finish(p, ProposalStatus.FAILED, "limit", violations)
@@ -102,18 +115,21 @@ class Executor:
 
             try:
                 request, response = handler.apply(p)
-            except AdapterError as e:
+            except Exception as e:  # noqa: BLE001
                 self.store.add_execution(p.id, p.shop_key, snapshot=snapshot, request={"error": True},
                                          response={"error": str(e)}, outcome="apply_error")
                 return self._finish(p, ProposalStatus.FAILED, "apply_error", [str(e)],
-                                    retryable=e.category.retryable)
+                                    retryable=isinstance(e, AdapterError) and e.category.retryable)
 
-            verified = handler.verify(p, response)
+            try:
+                verified = handler.verify(p, response)
+            except Exception:  # noqa: BLE001 —— 回读本身出错按校验失败处理
+                verified = False
             rollback = None
             if not verified:
                 try:
                     rollback = handler.rollback(p, snapshot)
-                except AdapterError as e:
+                except Exception as e:  # noqa: BLE001
                     rollback = {"error": str(e)}
             self.store.add_execution(p.id, p.shop_key, snapshot=snapshot, request=request, response=response,
                                      verified=verified, rollback=rollback,

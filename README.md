@@ -23,9 +23,13 @@ python3 -m venv .venv
 .venv/bin/ecom-twin setup
 ```
 
+操作电脑（任意 Mac 软件）默认关闭：在 `settings.toml` 写 `[computer_use] enabled = true`（或在控制台的规则配置里打开），前提是本机装了 ChatGPT 桌面端、在 Codex 里启用了 Computer Use，并授予辅助功能和屏幕录制权限。`ecom-twin check` 会显示是否可用。
+
+从仓库直接跑时，配置、`.env`、数据库、记忆库都在仓库目录里；装好的版本放在 `~/Library/Application Support/EcomTwin/`（可用环境变量 `ECOM_TWIN_HOME` 指定），升级时只替换代码、不动数据。
+
 浏览器会打开飞书接入页，可配置 App ID / App Secret、负责人 open_id、店铺白名单、审批人、运行时和可选任务看板。密钥保存到权限为 `0600` 的 `.env`，页面和状态接口不回显。环境变量优先于文件；修改后需重启任务服务。
 
-打开页面、保存配置或直接启动 `serve` 时，会检查并自动安装缺失的飞书 SDK、默认与备用 agent CLI。其它运行时可以在页面单独安装；已有可用版本会保留。自动下载使用官方来源：Python `lark-oapi`、npm `@anthropic-ai/claude-code` / `@openai/codex` / `opencode-ai`、Cursor 官方安装脚本。npm 工具安装在项目 `data/tools/`，缺少 Node.js 时从官方站点下载 Node.js 22 并核对 SHA-256；Cursor 安装在官方默认用户目录。支持 macOS / Linux 的 arm64 / x64，安装失败可在页面重试；手动配置的错误路径需先修正或清空。
+打开页面、保存配置或直接启动 `serve` 时，会检查并自动安装缺失的飞书 SDK、默认与备用 agent CLI。其它运行时可以在页面单独安装；已有可用版本会保留。自动下载使用官方来源：Python `lark-oapi`、npm `@anthropic-ai/claude-code` / `@openai/codex` / `opencode-ai`、Cursor 官方安装脚本。npm 工具安装在数据目录的 `data/tools/`，缺少 Node.js 时从官方站点下载 Node.js 22 并核对 SHA-256；Cursor 安装在官方默认用户目录。支持 macOS / Linux 的 arm64 / x64，安装失败可在页面重试；手动配置的错误路径需先修正或清空。
 
 安装不包含 agent 账号登录。首次使用时，在终端运行（支持自动安装目录）：
 
@@ -42,7 +46,7 @@ python3 -m venv .venv
 
 配置页勾选「启用专用 Chrome MCP」后，先运行 `.venv/bin/ecom-twin browser start`。首次在弹出的专用 Chrome 中登录业务系统；它使用 `~/.agent-chrome`，不会复用日常 Chrome。任务运行时会自动挂载 Google `chrome-devtools-mcp`，并把文件访问限制在该任务工作目录。网页截图用 MCP 的 `take_screenshot` 写入 `evidence-image prepare` 输出的路径，随后用 `evidence-image collect` 校验完整 PNG、大小和唯一目标路径。桌面窗口可以使用 `evidence-image desktop TASK WINDOW_ID --box x,y,width,height`；标注依赖带 Pillow 的 Python，标注失败会保留原图供脱敏后交付。
 
-调度器在每一轮任务开始前会从任务标题和指令抽取关键词，自动召回相关人工记忆并记录到本地召回日志，再把正文放入本轮 Agent 上下文；Agent 仍可用 `recall_memory` 做追加检索。浏览器中的平台写操作仍然只能通过 `submit_proposal` 进入审批链。
+每一轮开局只注入人工记忆的索引（名称 — 触发动作）；Agent 按这一轮要做的动作比索引，用 `read_memory` 读全文，拿不准时用 `search_memory` 兜底检索，每次都记进召回日志，并在汇报末尾写召回留痕。浏览器中的平台写操作仍然只能通过 `submit_proposal` 进入审批链。
 
 配置页面仅监听 `127.0.0.1`，使用每次启动生成的访问令牌；请使用命令输出的完整链接。可用 `setup --no-browser --port 8766` 指定端口。从页面启动的任务服务会随配置服务退出而停止；需独立运行时使用 `serve`。配置 App ID / Secret 后使用官方 SDK 长连接，无需安装 lark-cli；未配置时仍兼容原 lark-cli 入口。
 

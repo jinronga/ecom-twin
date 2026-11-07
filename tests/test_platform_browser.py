@@ -191,5 +191,5 @@ def test_platform_list_tool_returns_help_when_empty(tmp_path, env):
 
     result, is_error = server.call("platform_list", {})
     assert not is_error
-    assert "还没有配置" in result
+    assert "没有配置" in result
     assert "settings.toml" in result

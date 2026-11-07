@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .config import PROJECT_ROOT
+from .paths import ENV_FILE, SETTINGS_FILE
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -35,7 +35,7 @@ def dotenv_values(path: Path) -> dict[str, str]:
 
 
 def feishu_credentials(env_path: Path | None = None) -> tuple[str, str]:
-    values = dotenv_values(env_path or PROJECT_ROOT / '.env')
+    values = dotenv_values(env_path or ENV_FILE)
     return tuple(os.environ.get(key) or values.get(key, '')
                  for key in ('FEISHU_APP_ID', 'FEISHU_APP_SECRET'))
 
@@ -67,8 +67,8 @@ def _toml(raw: dict[str, Any]) -> str:
 
 class SetupConfig:
     def __init__(self, config_path: Path | None = None, env_path: Path | None = None):
-        self.config_path = Path(config_path or PROJECT_ROOT / 'config/settings.toml')
-        self.env_path = Path(env_path or PROJECT_ROOT / '.env')
+        self.config_path = Path(config_path or SETTINGS_FILE)
+        self.env_path = Path(env_path or ENV_FILE)
 
     def raw(self):
         return tomllib.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists() else {}

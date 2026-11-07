@@ -18,17 +18,20 @@ def test_index_only_contains_names_and_descriptions(env, tmp_path):
     assert "广告健康线" in index and "超过 40%" not in index
 
 
-def test_recall_ranks_by_keywords_and_logs(env, tmp_path):
+def test_search_ranks_by_keywords_and_logs(env, tmp_path):
     mem = memory_store(env, tmp_path)
-    hits = mem.recall(["ACOS", "广告"], task_id="T-0001")
-    assert [m.name for m in hits] == ["广告健康线"]
-    assert env.app.store.list_recalls("T-0001")[0]["hits"] == ["广告健康线"]
-    assert mem.recall(["不存在的词"]) == []
+    hits = mem.search("广告", ["ACOS"], task_id="T-0001")
+    assert [h["name"] for h in hits] == ["广告健康线"]
+    recall = env.app.store.list_recalls("T-0001")[0]
+    assert recall["hits"] == ["广告健康线"] and recall["command"] == "search"
+    assert mem.search("不存在的词") == []
 
 
 def test_drafts_need_human_approval(env, tmp_path):
     mem = memory_store(env, tmp_path)
-    draft_id = mem.propose("测品经验", "测品款先小量上架", "先上 2 款看 7 天数据", "任务中发现缺失", task_id="T-0001")
+    draft_id = mem.propose({"mode": "create", "name": "测品经验", "description": "决定测品上架数量时打开",
+                            "body": "先上 2 款看 7 天数据", "why": "任务中发现缺失", "evidence": "T-0001"},
+                           task_id="T-0001")
     assert len(mem.all()) == 2  # 草稿不会直接生效
     path = mem.approve(draft_id)
     assert path.exists() and len(mem.all()) == 3

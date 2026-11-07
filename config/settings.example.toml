@@ -3,17 +3,51 @@
 
 [storage]
 db_path = "data/ecom_twin.db"
+memory_dir = "memory"        # 记忆库目录（控制台维护）
+recall_retention_days = 90   # 召回记录保留天数，每天清理一次；0 = 不删
 
 [approval]
 # 提案默认有效期（小时）
 expire_hours = 24
 # 过期前多久提醒（小时）
 remind_before_hours = 4
+# 同一审批人、同一类提案在这么多秒内的合并成一张卡，逐条勾选（0 = 不合并，逐张发）
+batch_window_seconds = 0
+# 这些风险等级的提案要两个不同的人批准（主审批人 + 代理审批人）
+double_approval_risks = ["高"]
 
 # 每个店铺的主审批人和代理审批人（飞书 open_id）。key 为 "平台:店铺ID"
 [approvers."tiktok:10001"]
 primary = "ou_xxx"
 delegate = "ou_yyy"
+
+# 运营日报和异常巡检：数据和异常判断由代码计算；没有异常只发日报，有异常才建任务让 agent 分析
+# 数据先用 ERP 导出的 CSV：ecom-twin report import 文件.csv
+[daily_report]
+send_hour = 9                    # 本地几点发前一天的日报
+timezone = "Asia/Shanghai"
+acos_max = 0.35
+tacos_max = 0.15
+revenue_drop_pct = 30            # 比前 7 天日均下降超过 30% 报异常
+inventory_days_min = 14          # 可售天数低于 14 天报异常
+# ERP 导出表格的列名不一样时在这里改映射（统一字段 = 表格里的列名）
+[daily_report.columns]
+date = "日期"
+shop = "店铺"
+sku = "SKU"
+sales_qty = "销量"
+revenue = "销售额"
+ad_spend = "广告花费"
+ad_sales = "广告销售额"
+inventory = "可售库存"
+
+# 影子模式：这些操作类型的提案只记录、不推送审批、不执行；和运营实际操作比对吻合率（ecom-twin shadow report）
+[shadow]
+actions = []    # 例：["miaoshou.tiktok.publish"]
+
+# 店铺站点时区：「单店每日写操作次数」按站点本地自然日计算（不配按 UTC）
+[shop_timezones]
+"tiktok:10001" = "America/Los_Angeles"
 
 [limits]
 # 可操作的店铺白名单，key 为 "平台:店铺ID"。为空则拒绝所有写操作
@@ -37,8 +71,48 @@ base_app_token = ""
 tasks_table_id = ""
 steps_table_id = ""
 proposals_table_id = ""
+# 其余看板表（不填就不同步）：消息、执行记录、代发记录、召回记录、复盘
+messages_table_id = ""
+executions_table_id = ""
+outbound_table_id = ""
+recalls_table_id = ""
+reviews_table_id = ""
 # 每秒最多写入多维表格的次数（节流）
 base_max_writes_per_sec = 3
+# agent 拉上下文：默认只读任务来源的会话；这里可以额外放行几个会话（chat_id，oc_ 开头），例如运营群
+readable_chats = []
+# 允许用你本人的身份搜索你能看到的全部聊天记录（需要先 lark-cli auth login）。涉及隐私，默认关闭
+allow_user_search = false
+
+# 消息入口与驱动。私聊负责人总是监听；群只监听这里列出的（机器人要在群里）
+[intake]
+listen_chats = []            # 例：["oc_xxx 运营群"]
+bot_name = "分身"            # 群里 @分身 视为点名
+quiet_seconds = 60           # 群消息静默攒批
+ask_window_hours = 2         # 分身提问后的问后窗口
+same_class_whitelist = []    # 允许同类合并的类别，例：["新增运输商"]
+# anchor_patterns 可追加自己的单号格式，例：["\\bTMS-\\d+\\b"]
+
+# 代发权限：分身在群里说话需要逐个群打开，默认全关。没权限时一律改为私聊负责人
+# [send_permissions."oc_xxx"]
+# reply = true    # 在 thread 里回执、汇报
+# ask = true      # 在群里提问
+# notify = false  # 主动发新消息
+
+# 操作电脑（任意 Mac 软件），和数字分身一样借用本机 ChatGPT / Codex 装的 Computer Use。默认关闭。
+# 打开前：安装 ChatGPT 桌面端、在 Codex 里启用 Computer Use，并在「系统设置 → 隐私与安全性」给
+# Codex Computer Use 授予辅助功能和屏幕录制权限。打开后所有底座都经 ecom-twin 的代理使用（只放行 js / js_reset，
+# 每次调用写审计，命中 blocked_keywords 的直接拒绝）；对外生效、不可撤回的动作 agent 要先问负责人或提案。
+# 用 ecom-twin check 看是否可用。
+[computer_use]
+enabled = false
+# 允许操作的软件（名称或 bundle ID）。Computer Use 每碰一个 app 都会先问，ecom-twin 只批准这里列出的；空 = 一个都不批
+allowed_apps = []   # 例：["Calculator", "com.microsoft.Excel", "海外仓客户端"]
+# 另一种做法（和数字分身一样）：让 agent 用 Bash 跑 AppleScript 操作电脑。只放开下面这几个命令，其它命令一律拒绝。
+# 目前只支持 Claude Code 底座；界面脚本需要给运行 ecom-twin 的程序授予「辅助功能」权限，窗口截图需要「屏幕录制」权限。
+applescript = false
+# shell_commands = ["osascript", "open", "cliclick"]   # 截图不用 screencapture，用 desktop_capture 工具（按窗口截、不抢焦点）
+# blocked_keywords = ["sellercentral", "seller.tiktok", "keychain", "1password"]   # 不填用内置默认
 
 [runtime]
 # 默认底座：claude_code | codex
@@ -61,6 +135,11 @@ enabled = false
 browser_url = "http://127.0.0.1:9222"
 chrome_path = ""
 user_data_dir = ""
+# agent 能不能在专用 Chrome 里跳转、点击、填写、执行脚本（和数字分身一样，默认放开）；false = 只能读页面和截图。
+# 放开时经 ecom-twin 代理：网址或脚本里出现下面这些词一律拒绝（卖货店铺后台、广告后台只走官方 API 和提案），每次操作写审计。
+# 专用 Chrome 里不要登录卖货后台：已经开着的标签页，代理拦不住 agent 切过去点。
+interactive = true
+# interactive_blocked = ["sellercentral", "seller.tiktok", "advertising.amazon", "ads.tiktok", "91miaoshou"]   # 不填用内置默认
 
 # 功能5：只读网页取证。agent 用 capture_page 打开公开页面截图取证，
 # 只能「看」不能「点」——不登录、不填表、不操作卖家后台。
@@ -76,8 +155,8 @@ blocked_keywords = [
 ]
 timeout_sec = 45.0
 
-# 功能3：场景 SOP（skill）所在目录列表。同名 SOP 取第一个目录的。
-# 未配置时默认使用项目内置的 skills/ 目录。
+# 功能3：场景 SOP（skill）所在目录列表。项目自带的 skills/ 总是排在最前（同名时优先），
+# 再按这里的顺序加入；同名 SOP 取第一个。例：dirs = ["~/work/demo/commerce-market-skills"]
 [skills]
 dirs = []
 
@@ -89,5 +168,4 @@ dirs = []
 # name = "内部 OA 审批"
 # base_url = "https://oa.example.com"
 # login_url = "https://oa.example.com/login"
-# is_store_backend = false
 

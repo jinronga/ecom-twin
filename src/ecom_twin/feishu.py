@@ -18,13 +18,69 @@ class FeishuError(Exception):
     pass
 
 
+def content_text(msg_type: str, content: Any) -> str:
+    """把飞书消息内容（JSON 字符串）转成纯文本。不认识的类型给出占位说明。"""
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            return content
+    if not isinstance(content, dict):
+        return str(content or "")
+    if msg_type == "text" or "text" in content:
+        return str(content.get("text", ""))
+    if msg_type == "post" or "content" in content:
+        post = content
+        if "content" not in post:  # 多语言：{"zh_cn": {...}}
+            post = next((v for v in content.values() if isinstance(v, dict) and "content" in v), {})
+        parts = [post.get("title", "")]
+        for line in post.get("content", []):
+            parts.append("".join(seg.get("text") or seg.get("user_name") or seg.get("href", "")
+                                 for seg in line if isinstance(seg, dict)))
+        return "\n".join(p for p in parts if p)
+    if msg_type == "image":
+        return "[图片]"
+    if msg_type == "file":
+        return f"[文件 {content.get('file_name', '')}]"
+    if msg_type == "interactive":
+        return "[卡片消息]"
+    return f"[{msg_type} 消息]"
+
+
+def normalize_message(item: dict[str, Any]) -> dict[str, Any]:
+    """统一成 agent 看得懂的结构：谁、什么时候、说了什么、属于哪个 thread。"""
+    sender = item.get("sender") or {}
+    created = item.get("create_time") or ""
+    ts = ""
+    if str(created).isdigit():
+        from datetime import datetime, timezone
+        ts = datetime.fromtimestamp(int(created) / 1000, tz=timezone.utc).isoformat(timespec="seconds")
+    body = item.get("body") or {}
+    text = content_text(item.get("msg_type", ""), body.get("content", item.get("content", "")))
+    return {
+        "message_id": item.get("message_id", ""),
+        "chat_id": item.get("chat_id", ""),
+        "sender_id": sender.get("id", "") if isinstance(sender, dict) else str(sender),
+        "sender_type": sender.get("sender_type", "") if isinstance(sender, dict) else "",
+        "time": ts or str(created),
+        "text": text[:2000],
+        "parent_id": item.get("parent_id", ""),
+        "root_id": item.get("root_id", ""),
+        "thread_id": item.get("thread_id", ""),
+        "deleted": bool(item.get("deleted")),
+    }
+
+
 class FeishuClient(Protocol):
     def send_card(self, open_id: str, card: dict[str, Any]) -> str: ...
     def send_text(self, open_id: str, text: str) -> str: ...
     def reply_text(self, message_id: str, text: str) -> str: ...
     def get_parent_id(self, message_id: str) -> str | None: ...
+    def reply_image(self, message_id: str, image_path: str) -> str: ...
+    def send_chat_text(self, chat_id: str, text: str) -> str: ...
     def base_create(self, app_token: str, table_id: str, fields: dict[str, Any]) -> str: ...
     def base_update(self, app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> None: ...
+    def base_list(self, app_token: str, table_id: str) -> list[dict[str, Any]]: ...
     # ---- 读上下文（只读） ----
     def get_message(self, message_id: str) -> dict[str, Any] | None: ...
     def chat_messages(self, chat_id: str, start_ts: int, end_ts: int, limit: int = 50) -> list[dict[str, Any]]: ...
@@ -78,12 +134,88 @@ class LarkCliFeishu:
     def send_text(self, open_id: str, text: str) -> str:
         return self._send(open_id, "text", {"text": text})
 
+    def send_chat_text(self, chat_id: str, text: str) -> str:
+        data = self._api("POST", "/open-apis/im/v1/messages", params={"receive_id_type": "chat_id"},
+                         data={"receive_id": chat_id, "msg_type": "text",
+                               "content": json.dumps({"text": text}, ensure_ascii=False)})
+        return data["message_id"]
+
     def reply_text(self, message_id: str, text: str) -> str:
         data = self._api(
             "POST", f"/open-apis/im/v1/messages/{message_id}/reply",
             data={"msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
         )
         return data["message_id"]
+
+    def reply_image(self, message_id: str, image_path: str) -> str:
+        """上传图片拿 image_key，再回复到消息的 thread（证据截图）。"""
+        cmd = [self.binary, "api", "POST", "/open-apis/im/v1/images", "--as", self.identity, "--format", "json",
+               "--data", json.dumps({"image_type": "message"}), "--file", f"image={image_path}"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
+        try:
+            payload = json.loads(proc.stdout or proc.stderr)
+        except json.JSONDecodeError as e:
+            raise FeishuError(f"上传图片失败：{(proc.stderr or proc.stdout)[:200]}") from e
+        image_key = (payload.get("data") or {}).get("image_key")
+        if proc.returncode != 0 or not image_key:
+            raise FeishuError(f"上传图片失败：{(payload.get('error') or {}).get('message') or payload.get('msg')}")
+        data = self._api("POST", f"/open-apis/im/v1/messages/{message_id}/reply",
+                         data={"msg_type": "image", "content": json.dumps({"image_key": image_key})})
+        return data["message_id"]
+
+    def get_message(self, message_id: str) -> dict[str, Any] | None:
+        data = self._api("GET", f"/open-apis/im/v1/messages/{message_id}")
+        items = data.get("items") or []
+        return normalize_message(items[0]) if items else None
+
+    def _list(self, container_type: str, container_id: str, limit: int, extra: dict | None = None) -> list[dict]:
+        params = {"container_id_type": container_type, "container_id": container_id,
+                  "sort_type": "ByCreateTimeDesc", "page_size": str(min(limit, 50)), **(extra or {})}
+        items: list[dict] = []
+        while len(items) < limit:
+            data = self._api("GET", "/open-apis/im/v1/messages", params=params)
+            items += data.get("items") or []
+            if not data.get("has_more") or not data.get("page_token"):
+                break
+            params["page_token"] = data["page_token"]
+        msgs = [normalize_message({**i, "chat_id": i.get("chat_id") or (container_id if container_type == "chat" else "")})
+                for i in items[:limit]]
+        return sorted(msgs, key=lambda m: m["time"])
+
+    def chat_messages(self, chat_id: str, start_ts: int, end_ts: int, limit: int = 50) -> list[dict[str, Any]]:
+        return self._list("chat", chat_id, limit, {"start_time": str(start_ts), "end_time": str(end_ts)})
+
+    def thread_messages(self, thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        return self._list("thread", thread_id, limit)
+
+    def search_messages(self, query: str, start_ts: int, end_ts: int, limit: int = 20) -> list[dict[str, Any]]:
+        """用负责人本人身份搜索（需要 lark-cli auth login）。返回结构以 lark-cli 输出为准，统一后返回。"""
+        from datetime import datetime, timezone
+        fmt = lambda t: datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds")  # noqa: E731
+        cmd = [self.binary, "im", "+messages-search", "--as", "user", "--format", "json", "--query", query,
+               "--start", fmt(start_ts), "--end", fmt(end_ts), "--page-size", str(min(limit, 50))]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
+        try:
+            payload = json.loads(proc.stdout or proc.stderr)
+        except json.JSONDecodeError as e:
+            raise FeishuError(f"搜索消息失败：{(proc.stderr or proc.stdout)[:200]}") from e
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            raise FeishuError(f"搜索消息失败：{(payload.get('error') or {}).get('message')}")
+        found: list[dict] = []
+
+        def walk(node: Any) -> None:  # 输出结构可能随 lark-cli 版本变化，找出所有带 message_id 的对象
+            if isinstance(node, dict):
+                if node.get("message_id"):
+                    found.append(normalize_message(node))
+                    return
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+
+        walk(payload)
+        return found[:limit]
 
     def get_parent_id(self, message_id: str) -> str | None:
         data = self._api("GET", f"/open-apis/im/v1/messages/{message_id}")
@@ -99,99 +231,16 @@ class LarkCliFeishu:
         self._api("PUT", f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
                   data={"fields": fields})
 
-    # ---- 上下文拉取（只读） ----
-    def get_message(self, message_id: str) -> dict[str, Any] | None:
-        """获取单条消息。"""
-        try:
-            data = self._api("GET", f"/open-apis/im/v1/messages/{message_id}")
-            items = data.get("items") or []
-            return normalize_message(items[0]) if items else None
-        except FeishuError:
-            return None
-
-    def _list(self, container_type: str, container_id: str, limit: int, extra_params: dict | None = None) -> list[dict[str, Any]]:
-        """通用消息列表拉取（chat/thread）。"""
-        params = {"container_id": container_id, "container_id_type": container_type, "page_size": str(min(limit, 100))}
-        if extra_params:
-            params.update(extra_params)
-        items = []
-        while len(items) < limit:
-            data = self._api("GET", "/open-apis/im/v1/messages", params=params)
-            batch = data.get("items") or []
-            if not batch:
-                break
-            items.extend(batch)
-            if not data.get("has_more"):
-                break
+    def base_list(self, app_token: str, table_id: str) -> list[dict[str, Any]]:
+        """读表里全部记录（分页），返回 [{"record_id", "fields"}]。"""
+        params: dict[str, Any] = {"page_size": "500"}
+        records: list[dict] = []
+        while True:
+            data = self._api("GET", f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records", params=params)
+            records += [{"record_id": i.get("record_id"), "fields": i.get("fields") or {}} for i in data.get("items") or []]
+            if not data.get("has_more") or not data.get("page_token"):
+                return records
             params["page_token"] = data["page_token"]
-        msgs = [normalize_message({**i, "chat_id": i.get("chat_id") or (container_id if container_type == "chat" else "")})
-                for i in items[:limit]]
-        return sorted(msgs, key=lambda m: m["time"])
-
-    def chat_messages(self, chat_id: str, start_ts: int, end_ts: int, limit: int = 50) -> list[dict[str, Any]]:
-        """拉取会话消息（时间范围）。"""
-        return self._list("chat", chat_id, limit, {"start_time": str(start_ts), "end_time": str(end_ts)})
-
-    def thread_messages(self, thread_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """拉取 thread 消息。"""
-        return self._list("thread", thread_id, limit)
-
-    def search_messages(self, query: str, start_ts: int, end_ts: int, limit: int = 20) -> list[dict[str, Any]]:
-        """用负责人本人身份搜索（需要 lark-cli auth login）。"""
-        from datetime import datetime, timezone
-        start = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-        end = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-        # lark-cli 的搜索返回结构由命令行定义，走 JSON parse
-        cmd = [self.binary, "api", "GET", "/open-apis/search/v2/message",
-               "--as", "user", "--format", "json",
-               "--params", json.dumps({"query": query, "start_time": start, "end_time": end, "page_size": str(limit)})]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
-        if proc.returncode != 0:
-            raise FeishuError(f"搜索失败：{proc.stderr.strip()}")
-        payload = json.loads(proc.stdout).get("data", {})
-        found = []
-
-        def walk(node):
-            if isinstance(node, dict):
-                if "message_id" in node:
-                    found.append(normalize_message(node))
-                    return
-                for v in node.values():
-                    walk(v)
-            elif isinstance(node, list):
-                for v in node:
-                    walk(v)
-
-        walk(payload)
-        return found[:limit]
-
-
-def normalize_message(msg: dict[str, Any]) -> dict[str, Any]:
-    """将飞书消息规范化为统一格式。"""
-    from datetime import datetime
-    sender = msg.get("sender") or {}
-    content = msg.get("content") or msg.get("body") or {}
-    if isinstance(content, str):
-        try:
-            content = json.loads(content)
-        except json.JSONDecodeError:
-            content = {}
-
-    # 提取纯文本
-    text = content.get("text", "")
-    if not text and "content" in content:  # 有些消息格式是 {"content": "..."}
-        text = content["content"]
-
-    return {
-        "message_id": msg.get("message_id", ""),
-        "chat_id": msg.get("chat_id", ""),
-        "thread_id": msg.get("thread_id") or msg.get("parent_id") or "",
-        "sender_id": sender.get("id") or sender.get("sender_id") or "",
-        "sender_name": (sender.get("name") or sender.get("sender_name") or "未知"),
-        "text": text,
-        "time": datetime.fromtimestamp(int(msg.get("create_time") or msg.get("msg_time") or 0) / 1000).isoformat(),
-        "msg_type": msg.get("msg_type", "text"),
-    }
 
 
 def consume_messages(binary: str = "lark-cli", sleep=None) -> Iterator[dict[str, Any]]:
@@ -249,11 +298,11 @@ class ConsoleFeishu:
     def get_parent_id(self, message_id: str) -> str | None:
         return None
 
-    def base_create(self, app_token: str, table_id: str, fields: dict[str, Any]) -> str:
-        return self._out("看板新增", table_id, fields)
+    def reply_image(self, message_id: str, image_path: str) -> str:
+        return self._out("图片", message_id, image_path)
 
-    def base_update(self, app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> None:
-        self._out("看板更新", table_id, fields)
+    def send_chat_text(self, chat_id: str, text: str) -> str:
+        return self._out("群消息", chat_id, text)
 
     def get_message(self, message_id: str) -> dict[str, Any] | None:
         return None
@@ -267,9 +316,19 @@ class ConsoleFeishu:
     def search_messages(self, query: str, start_ts: int, end_ts: int, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
+    def base_create(self, app_token: str, table_id: str, fields: dict[str, Any]) -> str:
+        return self._out("看板新增", table_id, fields)
+
+    def base_update(self, app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> None:
+        self._out("看板更新", table_id, fields)
+
+    def base_list(self, app_token: str, table_id: str) -> list[dict[str, Any]]:
+        return []
+
 
 def make_feishu() -> FeishuClient:
-    """ECOM_TWIN_FEISHU=console 时用 ConsoleFeishu（本地调试，MCP server 子进程也会继承），否则用 lark-cli。"""
+    """ECOM_TWIN_FEISHU=console 时用 ConsoleFeishu（本地调试，MCP server 子进程也会继承）；
+    配置页保存了自建应用凭证时用官方接口（NativeFeishu），否则用 lark-cli。"""
     if os.environ.get("ECOM_TWIN_FEISHU") == "console":
         return ConsoleFeishu()
     from .setup_config import feishu_credentials
@@ -297,8 +356,9 @@ class FakeFeishu:
     sent: list[dict[str, Any]] = field(default_factory=list)
     parents: dict[str, str] = field(default_factory=dict)
     records: dict[str, dict[str, Any]] = field(default_factory=dict)
-    history: list[dict[str, Any]] = field(default_factory=list)  # 用于模拟上下文拉取
     fail_base: bool = False
+    # 模拟会话历史：normalize_message 之后的结构，time 为 ISO 字符串
+    history: list[dict[str, Any]] = field(default_factory=list)
     _seq: int = 0
 
     def _next(self, prefix: str) -> str:
@@ -323,18 +383,6 @@ class FakeFeishu:
     def get_parent_id(self, message_id: str) -> str | None:
         return self.parents.get(message_id)
 
-    def base_create(self, app_token: str, table_id: str, fields: dict[str, Any]) -> str:
-        if self.fail_base:
-            raise FeishuError("模拟限流")
-        rid = self._next("rec")
-        self.records[rid] = {"table": table_id, **fields}
-        return rid
-
-    def base_update(self, app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> None:
-        if self.fail_base:
-            raise FeishuError("模拟限流")
-        self.records[record_id].update(fields)
-
     def get_message(self, message_id: str) -> dict[str, Any] | None:
         return next((m for m in self.history if m["message_id"] == message_id), None)
 
@@ -350,3 +398,29 @@ class FakeFeishu:
 
     def search_messages(self, query: str, start_ts: int, end_ts: int, limit: int = 20) -> list[dict[str, Any]]:
         return [m for m in self.history if query in m["text"]][:limit]
+
+    def reply_image(self, message_id: str, image_path: str) -> str:
+        mid = self._next("om")
+        self.sent.append({"type": "image", "reply_to": message_id, "path": image_path, "message_id": mid})
+        return mid
+
+    def send_chat_text(self, chat_id: str, text: str) -> str:
+        mid = self._next("om")
+        self.sent.append({"type": "chat", "to_chat": chat_id, "text": text, "message_id": mid})
+        return mid
+
+    def base_create(self, app_token: str, table_id: str, fields: dict[str, Any]) -> str:
+        if self.fail_base:
+            raise FeishuError("模拟限流")
+        rid = self._next("rec")
+        self.records[rid] = {"table": table_id, **fields}
+        return rid
+
+    def base_update(self, app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> None:
+        if self.fail_base:
+            raise FeishuError("模拟限流")
+        self.records[record_id].update(fields)
+
+    def base_list(self, app_token: str, table_id: str) -> list[dict[str, Any]]:
+        return [{"record_id": rid, "fields": {k: v for k, v in rec.items() if k != "table"}}
+                for rid, rec in self.records.items() if rec.get("table") == table_id]

@@ -188,9 +188,9 @@ def test_node_download_checksum_mismatch_stops_install(monkeypatch, tmp_path):
 
 
 def test_service_start_uses_saved_config_and_stop_terminates_process_group(server, monkeypatch):
-    from ecom_twin.config import PROJECT_ROOT
+    from ecom_twin.paths import ENV_FILE
     server.app.config.config_path.write_text('[feishu]\nowner_open_id="ou_owner"\n')
-    server.app.config.env_path = PROJECT_ROOT / '.env'
+    server.app.config.env_path = ENV_FILE
     monkeypatch.setattr('ecom_twin.setup_web.feishu_credentials', lambda *a: ('cli_fixture', 'private-fixture'))
     calls, signals = [], []
     class FakeProcess:

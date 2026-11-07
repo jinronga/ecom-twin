@@ -74,3 +74,53 @@ def test_same_task_runs_are_serialized(env, tmp_path):
     lock.release()
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+def test_old_database_is_migrated(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(db)  # 模拟 10-16 之前的旧表结构：tasks、steps 都缺后加的列
+    conn.executescript("""
+        CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL, scene TEXT NOT NULL,
+            status TEXT NOT NULL, shop_key TEXT, anchors TEXT, owner TEXT, current_step TEXT, runtime TEXT,
+            conclusion TEXT, blocker TEXT, created_at TEXT, updated_at TEXT, last_heartbeat TEXT);
+        CREATE TABLE steps (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, name TEXT NOT NULL,
+            status TEXT NOT NULL, summary TEXT, error TEXT, started_at TEXT, ended_at TEXT);
+    """)
+    conn.close()
+    store = Store(db)
+    task = store.save_task(__import__("ecom_twin.models", fromlist=["Task"]).Task(
+        id="T-0001", title="t", source=TaskSource.SELF_DM, scene="x", tokens_in=5))
+    from ecom_twin.models import Step, StepStatus
+    store.add_step(Step(id=None, task_id=task.id, name="s", status=StepStatus.SUCCESS, evidence="a.png"))
+    assert store.get_task("T-0001").tokens_in == 5
+    assert store.list_steps("T-0001")[0].evidence == "a.png"
+
+
+def test_old_database_with_different_column_order(tmp_path):
+    """旧库列顺序和现在不同、并且缺列时，按列名写入也不会错位。"""
+    import sqlite3
+    from ecom_twin.models import Task
+    db = tmp_path / "old2.sqlite"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL, title TEXT NOT NULL, scene TEXT NOT NULL,
+            source TEXT NOT NULL, shop_key TEXT, anchors TEXT, owner TEXT, current_step TEXT, runtime TEXT,
+            conclusion TEXT, blocker TEXT, created_at TEXT, updated_at TEXT, last_heartbeat TEXT);
+    """)
+    conn.close()
+    store = Store(db)
+    store.save_task(Task(id="T-0001", title="标题", source=TaskSource.SELF_DM, scene="上品", origin_chat_type="group"))
+    t = store.get_task("T-0001")
+    assert (t.title, t.scene, t.status.value, t.origin_chat_type) == ("标题", "上品", "待处理", "group")
+
+
+def test_old_table_missing_indexed_column(tmp_path):
+    import sqlite3
+    db = tmp_path / "old3.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE proposals (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, shop_key TEXT NOT NULL, "
+                 "action TEXT NOT NULL, status TEXT NOT NULL)")  # 缺 card_message_id，而 SCHEMA 要给它建索引
+    conn.close()
+    store = Store(db)
+    assert store.proposals_by_card("om_x") == []

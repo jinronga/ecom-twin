@@ -1,0 +1,38 @@
+# Listing 合规检查规则（DESIGN.md 8.4、13.2）。
+# 词库是起步版本，请运营按类目和平台最新政策补充；平台字数上限以平台最新规则为准。
+# 命中 block 级规则：暂存区编辑被拒绝，发布提案被拒收；命中 warn 级规则：写进审批卡片提醒审批人。
+
+[common]
+# 夸大、绝对化用语（多数平台禁止）
+absolute_words = ["best", "No.1", "#1", "100%", "guaranteed", "cheapest", "最好", "第一", "最便宜", "100%有效", "国家级", "顶级"]
+# 医疗、功效宣称（非医疗类目禁止）
+medical_claims = ["cure", "cures", "treat", "treats", "heal", "prevent disease", "anti-virus", "antibacterial",
+                  "FDA approved", "治疗", "治愈", "杀菌", "抗病毒", "防癌", "药用"]
+# 常见侵权品牌词（示例，请按自家情况补充；自有品牌请加到 own_brands）
+brand_terms = ["Nike", "Adidas", "Disney", "Marvel", "Apple", "iPhone", "Samsung", "LEGO", "Pokemon", "Hello Kitty",
+               "Gucci", "Louis Vuitton", "Chanel", "Stanley", "YETI"]
+# 自有品牌（不算侵权）
+own_brands = []
+# 引流、站外联系方式
+contact_patterns = ["(?i)whatsapp", "(?i)wechat", "(?i)telegram", "(?i)www\\.", "(?i)https?://", "微信", "加V"]
+
+[levels]
+absolute_words = "block"
+medical_claims = "block"
+brand_terms = "block"
+contact_patterns = "block"
+title_length = "block"      # 超过平台上限
+title_too_short = "warn"    # 太短只提醒
+title_all_caps = "warn"
+
+[platforms.tiktok]
+title_max = 255
+title_min = 25
+
+[platforms.amazon]
+title_max = 200
+title_min = 25
+
+[platforms.noon]
+title_max = 200
+title_min = 20

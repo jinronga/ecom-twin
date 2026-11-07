@@ -1,0 +1,2 @@
+- 这个浏览器只能截图和读页面：`list_pages`、`select_page` 查看已打开的页面，`take_snapshot` 读内容，`take_screenshot` 截图。不能跳转、点击、填写或执行脚本；要打开公开网页用 capture_page。
+- 内部平台要填表、提交，写成 browser.flow 提案走 `submit_proposal`，审批通过后由执行器操作。

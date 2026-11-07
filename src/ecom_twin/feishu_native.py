@@ -22,6 +22,8 @@ class NativeFeishu(LarkCliFeishu):
         self.app_id, self.app_secret, self.timeout = app_id, app_secret, timeout
         self._token, self._expires = '', 0
         self._lock = threading.Lock()
+        # 按负责人本人身份搜索聊天记录只能走 lark-cli 的用户授权（应用凭证没有这个权限），这里沿用父类的 CLI 设置
+        self.binary, self.identity = 'lark-cli', 'bot'
 
     def _request(self, method, path, data=None, token=''):
         headers = {'Content-Type': 'application/json; charset=utf-8'}
@@ -69,6 +71,29 @@ class NativeFeishu(LarkCliFeishu):
         bot = info.get('bot', {})
         return {'ok': True, 'bot_name': bot.get('app_name') or bot.get('name') or '飞书机器人',
                 'message': '应用认证和机器人信息读取成功。消息订阅需在飞书后台开启长连接并实测。'}
+
+    def reply_image(self, message_id: str, image_path: str) -> str:
+        """上传图片拿 image_key，再回复到消息的 thread（证据截图）。"""
+        path = Path(image_path)
+        boundary = 'ecomtwin' + os.urandom(8).hex()
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image_type"\r\n\r\nmessage\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{path.name}"\r\n'
+                'Content-Type: application/octet-stream\r\n\r\n').encode() + path.read_bytes() + \
+            f'\r\n--{boundary}--\r\n'.encode()
+        request = urllib.request.Request(BASE_URL + '/open-apis/im/v1/images', method='POST', data=body,
+                                         headers={'Authorization': 'Bearer ' + self.tenant_token(),
+                                                  'Content-Type': f'multipart/form-data; boundary={boundary}'})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = json.load(response)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            raise FeishuError('上传图片失败：飞书网络请求失败') from None
+        image_key = ((payload or {}).get('data') or {}).get('image_key')
+        if payload.get('code', 0) != 0 or not image_key:
+            raise FeishuError(f"上传图片失败：{str(payload.get('msg') or '没有返回 image_key')[:200]}")
+        data = self._api('POST', f'/open-apis/im/v1/messages/{message_id}/reply',
+                         data={'msg_type': 'image', 'content': json.dumps({'image_key': image_key})})
+        return data['message_id']
 
     def download_image(self, message_id: str, image_key: str, destination: str | Path) -> Path:
         """下载入站图片到任务工作目录，限制大小并以临时文件原子落盘。
@@ -179,7 +204,8 @@ def normalize_message(payload: dict[str, Any]) -> dict[str, Any] | None:
     result = {'event_id': (payload.get('header') or {}).get('event_id') or message['message_id'],
             'message_id': message['message_id'], 'sender_id': sender_id,
             'chat_type': message.get('chat_type'), 'content': text,
-            'parent_id': message.get('parent_id', ''), 'chat_id': message.get('chat_id', '')}
+            'parent_id': message.get('parent_id', ''), 'root_id': message.get('root_id', ''),
+            'chat_id': message.get('chat_id', '')}
     if image_keys:
         result['prompt_content'] = text
         result['content'] = '[飞书图片消息]' if message_type == 'image' else '[飞书图文消息]'

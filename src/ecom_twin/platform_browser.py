@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urljoin, urlparse
 
-from .config import PROJECT_ROOT, PlatformSettings, is_store_backend
+from .config import PlatformSettings, is_store_backend
+from .paths import BROWSER_PROFILES_DIR
 
-PROFILE_ROOT = PROJECT_ROOT / "data" / "browser-profiles"
+PROFILE_ROOT = BROWSER_PROFILES_DIR
 STEP_OPS = ("goto", "fill", "select", "check", "click", "wait_text")
 
 

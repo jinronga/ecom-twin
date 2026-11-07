@@ -27,7 +27,10 @@ def test_mcp_lists_only_safe_tools(env, tmp_path):
     assert init["result"]["serverInfo"]["name"] == "ecom"
     names = [t["name"] for t in server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]]
     assert names == tool_names()
-    assert not any("publish" in n or "claim" in n for n in names)  # 写接口从不暴露给 agent
+    # 对外生效的写接口（发布）从不暴露给 agent；按用户决定，只有采集箱暂存区写入以 staging_ 前缀开放
+    assert not any("publish" in n for n in names)
+    write_verbs = ("claim", "edit", "save", "create", "delete", "update", "staging_collect")
+    assert all(n.startswith("staging_") for n in names if any(v in n for v in write_verbs))
     assert server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
 
 
@@ -168,26 +171,60 @@ def test_post_image_message_downloads_all_attachments_and_keeps_log_redacted(env
     assert str(tmp_path / "ws" / task_id / "attachments") in calls[0][2]
 
 
-def test_dispatcher_automatically_recalls_and_injects_relevant_memory(env, tmp_path):
+def test_dispatcher_injects_memory_index_but_not_bodies(env, tmp_path):
+    """开局只注入索引（名称 — 触发动作），正文由 agent 按动作自己读；调度器不替它召回。"""
     from ecom_twin.memory import render_memory
     (tmp_path / "catalog-memory.md").write_text(
-        render_memory("采集箱上品经验", "TikTok 上品与类目审核", "experience", "发布前应核对采集箱商品类目"),
+        render_memory("采集箱上品经验", "提交上架提案前打开：类目核对要点", "experience", "发布前应核对采集箱商品类目"),
         encoding="utf-8")
     d, _ = dispatcher(env, tmp_path, {"claude_code": [ok_script("s1", "已核对")]})
     d.run_task(env.task.id, "核对采集箱商品类目", resume=False)
-    assert "采集箱上品经验" in d.memory.index_text()
-    assert "发布前应核对采集箱商品类目" in d._spec(env.task.id, "检查", "### 采集箱上品经验\n发布前应核对采集箱商品类目").system_prompt
-    records = env.app.store.list_recalls(env.task.id)
-    assert len(records) == 1 and records[0]["hits"] == ["采集箱上品经验"]
+    system = d._spec(env.task.id, "检查").system_prompt
+    assert "- 采集箱上品经验 — 提交上架提案前打开：类目核对要点" in system
+    assert "发布前应核对采集箱商品类目" not in system
+    assert env.app.store.list_recalls(env.task.id) == []
 
 
 def test_dispatcher_can_mount_isolated_chrome_mcp(env, tmp_path):
+    """只读模式（[browser] interactive = false）：直接挂 chrome-devtools-mcp，只给截图和读页面。"""
     env.app.settings.browser.enabled = True
+    env.app.settings.browser.interactive = False
     d, _ = dispatcher(env, tmp_path, {})
-    spec = d._spec(env.task.id, "截图", "（无）")
+    d.chrome_check = lambda browser: None  # 端口上是专用 Chrome
+    spec = d._spec(env.task.id, "截图")
+    assert "不能跳转、点击、填写" in spec.system_prompt
     chrome = spec.mcp_servers["chrome-devtools"]
     assert chrome["args"][chrome["args"].index("--browserUrl") + 1] == "http://127.0.0.1:9222"
-    assert "--workspace" in chrome["args"] and "mcp__chrome-devtools__*" in spec.allowed_tools
+    assert "--workspace" in chrome["args"] and "mcp__chrome-devtools__*" not in spec.allowed_tools
+    chrome_tools = {t.split("__")[2] for t in spec.allowed_tools if t.startswith("mcp__chrome-devtools__")}
+    assert "take_screenshot" in chrome_tools and "take_snapshot" in chrome_tools
+    assert not chrome_tools & {"navigate_page", "new_page", "click", "fill", "fill_form", "evaluate_script"}
+
+
+def test_dispatcher_mounts_chrome_through_guard_when_interactive(env, tmp_path):
+    """默认放开（和数字分身一样）：经 chrome_guard 代理挂载，给跳转、点击、填写，不给上传本机文件。"""
+    env.app.settings.browser.enabled = True
+    d, _ = dispatcher(env, tmp_path, {})
+    d.chrome_check = lambda browser: None
+    spec = d._spec(env.task.id, "查入库单")
+    chrome = spec.mcp_servers["chrome-devtools"]
+    assert chrome["args"][:2] == ["-m", "ecom_twin.chrome_guard"]
+    assert chrome["args"][chrome["args"].index("--workdir") + 1] == str(tmp_path / "ws" / env.task.id)
+    chrome_tools = {t.split("__")[2] for t in spec.allowed_tools if t.startswith("mcp__chrome-devtools__")}
+    assert {"navigate_page", "click", "fill", "evaluate_script"} <= chrome_tools and "upload_file" not in chrome_tools
+    assert "background: true" in spec.system_prompt and "停在最后一步" in spec.system_prompt
+
+
+def test_browser_not_mounted_when_port_is_not_the_dedicated_chrome(env, tmp_path):
+    """端口上不是专用 Chrome（比如负责人的日常 Chrome）：不挂浏览器，提示词写明原因，留审计。"""
+    env.app.settings.browser.enabled = True
+    d, _ = dispatcher(env, tmp_path, {})
+    d.chrome_check = lambda browser: "端口 9222 上的 Chrome 不是专用浏览器"
+    spec = d._spec(env.task.id, "查入库单")
+    assert "chrome-devtools" not in spec.mcp_servers
+    assert not any(t.startswith("mcp__chrome-devtools__") for t in spec.allowed_tools)
+    assert "专用浏览器这一轮不可用：端口 9222 上的 Chrome 不是专用浏览器" in spec.system_prompt
+    assert "browser_unavailable" in env.app.store.audit_events(env.task.id)
 
 
 def test_reply_in_report_thread_resumes_same_session(env, tmp_path):
@@ -250,3 +287,44 @@ def test_awaiting_approval_status_survives_end_of_run(env, tmp_path):
 def test_retryable_markers():
     assert is_retryable("Selected model is at capacity") and is_retryable("HTTP 429")
     assert not is_retryable("invalid api key")
+
+
+class InlinePool:
+    """同步执行的线程池替身：走队列路径（pool 不为 None），但不开线程。"""
+
+    def submit(self, fn, *args):
+        fn(*args)
+
+
+def queued_dispatcher(env, tmp_path, scripts):
+    calls = []
+    runtime = ScriptedRuntime("claude_code", scripts, calls)
+    d = Dispatcher(env.app, MemoryStore(env.app.store, tmp_path), lambda key: runtime, tmp_path / "ws",
+                   pool=InlinePool(), sleep=lambda s: None)
+    return d, calls
+
+
+def test_reply_arriving_during_run_is_not_dropped(env, tmp_path):
+    """旧轮次运行中收到新回复：旧轮次结束后不能把新入队的消息标成已完成。"""
+    d, calls = None, None
+
+    def first_run():
+        yield RunEvent("session", {"session_id": "s1"})
+        d._submit(env.task.id, "第二条要求", resume=True)  # 运行期间到达的新回复
+        yield RunEvent("message", {"text": "第一轮完成"})
+        yield RunEvent("done", {"ok": True})
+
+    d, calls = queued_dispatcher(env, tmp_path, [first_run(), ok_script("s1", "第二轮完成")])
+    d._submit(env.task.id, "第一条要求", resume=False)
+    assert [c[2] for c in calls] == ["第一条要求", "第二条要求"]
+    assert env.app.store.get_task_queue(env.task.id)["state"] == "done"
+
+
+def test_messages_queued_before_start_are_merged_not_overwritten(env, tmp_path):
+    d, calls = queued_dispatcher(env, tmp_path, [ok_script("s1", "完成")])
+    env.app.store.set_queue_paused(True)  # 暂停队列，让两条都停在排队状态
+    d._submit(env.task.id, "第一条", resume=False)
+    d._submit(env.task.id, "第二条", resume=True)
+    env.app.store.set_queue_paused(False)
+    d.start_queue_worker()
+    assert len(calls) == 1 and "第一条" in calls[0][2] and "第二条" in calls[0][2]

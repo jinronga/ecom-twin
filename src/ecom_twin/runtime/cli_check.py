@@ -68,9 +68,9 @@ def resolve(key: str, configured: str = "") -> tuple[str, str]:
         found = _find(candidate)
         if found:
             return found, "自动查找"
-    from ..config import PROJECT_ROOT
+    from ..paths import TOOLS_DIR
     binary = {"claude_code": "claude", "codex": "codex", "cursor": "cursor-agent", "opencode": "opencode"}[key]
-    found = _find(str(PROJECT_ROOT / "data/tools/node/bin" / binary))
+    found = _find(str(TOOLS_DIR / "node" / "bin" / binary))
     if found:
         return found, "项目自动安装"
     return "", "未找到"

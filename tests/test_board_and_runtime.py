@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -65,7 +66,7 @@ def test_claude_events_are_normalized():
 
 
 def test_codex_command_is_read_only_and_writes_agents_md(tmp_path):
-    rt = CodexRuntime()
+    rt = CodexRuntime(home=tmp_path / "codex-home")
     s = spec(tmp_path)
     rt.prepare_workdir(s)
     cmd = rt.build_command(s)
@@ -89,7 +90,7 @@ def test_cursor_agent_writes_config_and_denies_shell(tmp_path):
     s = spec(tmp_path)
     rt.prepare_workdir(s)
     perms = _json.loads((tmp_path / ".cursor" / "cli.json").read_text())["permissions"]
-    assert "Shell(*)" in perms["deny"] and perms["allow"] == ["Mcp(ecom:*)"]
+    assert "Shell(*)" in perms["deny"] and perms["allow"] == ["Mcp(ecom:list_shops)"]
     cmd = rt.build_command(s, resume_id="c1")
     assert "--force" not in cmd and "--yolo" not in cmd
     assert cmd[cmd.index("--resume") + 1] == "c1" and cmd[-1] == s.prompt
@@ -117,3 +118,41 @@ def test_console_feishu_prints_to_stderr(capsys):
     f = ConsoleFeishu()
     mid = f.send_text("ou_boss", "你好")
     assert mid.startswith("om_console_") and "你好" in capsys.readouterr().err
+
+
+def test_runtimes_only_expose_allowlisted_mcp_tools(tmp_path):
+    from ecom_twin.runtime.base import RunSpec
+    from ecom_twin.runtime.codex import CodexRuntime
+    from ecom_twin.runtime.opencode import OpenCodeRuntime
+    spec = RunSpec(prompt="p", system_prompt="s", workdir=tmp_path,
+                   mcp_servers={"ecom": {"command": "py"}, "chrome-devtools": {"command": "npx"}},
+                   allowed_tools=["mcp__ecom__list_shops", "mcp__chrome-devtools__take_screenshot"])
+    cmd = CodexRuntime().build_command(spec)
+    assert 'mcp_servers.ecom.enabled_tools=["list_shops"]' in cmd
+    assert 'mcp_servers.chrome-devtools.enabled_tools=["take_screenshot"]' in cmd
+    OpenCodeRuntime().prepare_workdir(spec)
+    tools = json.loads((tmp_path / "opencode.json").read_text())["tools"]
+    assert tools["chrome-devtools_*"] is False and tools["chrome-devtools_take_screenshot"] is True
+
+
+def test_codex_runs_with_isolated_home_and_builtin_computer_features_off(tmp_path):
+    """本人 ~/.codex 里的插件（Computer Use、浏览器、应用连接器）不能带进任务：只链接凭证、只抄模型设置。"""
+    from ecom_twin.runtime.codex import prepare_isolated_home
+    source = tmp_path / "personal"
+    source.mkdir()
+    (source / "auth.json").write_text("{}")
+    (source / "config.toml").write_text(
+        'model = "gpt-x"\nnotify = ["/x/SkyComputerUseClient"]\n'
+        '[plugins."unified-computer-use@openai-bundled"]\nenabled = true\n'
+        '[mcp_servers.computer-use]\ncommand = "sky"\n'
+        '[model_providers.proxy]\nbase_url = "https://proxy.example.com/v1"\n')
+    home = prepare_isolated_home(tmp_path / "isolated", source)
+    config = (home / "config.toml").read_text()
+    assert "gpt-x" not in config and "proxy.example.com" in config  # 没配自定义提供方时不抄模型名
+    assert "computer" not in config.lower() and "plugins" not in config and "notify" not in config
+    assert (home / "auth.json").is_symlink() and (home / "auth.json").resolve() == (source / "auth.json").resolve()
+    rt = CodexRuntime(home=home)
+    assert rt.runtime_env({"PATH": "/bin"})["CODEX_HOME"] == str(home)
+    cmd = rt.build_command(spec(tmp_path))
+    for feature in ("computer_use", "browser_use", "apps"):
+        assert f"features.{feature}=false" in cmd

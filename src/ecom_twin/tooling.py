@@ -14,10 +14,10 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from .config import PROJECT_ROOT
+from .paths import TOOLS_DIR
 from .runtime.cli_check import CLI_SPECS, check
 
-TOOLS_ROOT = PROJECT_ROOT / 'data/tools'
+TOOLS_ROOT = TOOLS_DIR
 PACKAGES = {'claude_code': '@anthropic-ai/claude-code', 'codex': '@openai/codex', 'opencode': 'opencode-ai'}
 BINARIES = {'claude_code': 'claude', 'codex': 'codex', 'opencode': 'opencode'}
 CHROME_DEVTOOLS_PACKAGE = 'chrome-devtools-mcp'

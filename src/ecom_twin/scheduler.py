@@ -65,13 +65,25 @@ def health_check_job(store: Store, feishu: Any, owner_open_id: str, miaoshou: An
     return run
 
 
-def build_jobs(app: Any, memory: Any, miaoshou: Any | None) -> list[Job]:
+def build_jobs(app: Any, memory: Any, miaoshou: Any | None, intake: Any = None) -> list[Job]:
     jobs = [
+        *([Job("intake_flush", timedelta(seconds=5), lambda now: intake.flush(now))] if intake else []),
         Job("approval_sweep", timedelta(minutes=1), lambda now: app.approvals.sweep(now)),
+        Job("approval_cards", timedelta(seconds=5), lambda now: app.approvals.flush_cards(now)),
         Job("board_flush", timedelta(seconds=5), lambda now: app.board.flush(now, seconds=5)),
+        Job("board_export", timedelta(seconds=30), lambda now: app.board.export_logs()),
+        Job("board_pull", timedelta(seconds=60), lambda now: app.board.pull_changes(app.tasks)),
         Job("followups", timedelta(minutes=1), lambda now: app.followups.run_due(now)),
         Job("rejection_digest", timedelta(days=7), lambda now: memory.rejection_digest(days=7, now=now)),
+        Job("recall_prune", timedelta(days=1),
+            lambda now: app.store.prune_recalls(app.settings.recall_retention_days, now)),
     ]
+    from .daily_report import DailyReport
+    report = DailyReport(app, app.settings.daily_report, getattr(intake, "dispatcher", None))
+    jobs.append(Job("daily_report", timedelta(minutes=10),
+                    lambda now: (lambda day: report.run(day) if day else None)(report.due(now))))
+    if miaoshou is not None and getattr(app, "shadow", None) is not None:
+        jobs.append(Job("shadow_collect_publish", timedelta(hours=1), lambda now: app.shadow.collect_publish(miaoshou, now)))
     if miaoshou is not None:
         jobs.append(Job("health_miaoshou", timedelta(days=1),
                         health_check_job(app.store, app.feishu, app.settings.feishu.owner_open_id, miaoshou)))

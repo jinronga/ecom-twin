@@ -15,7 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .config import PROJECT_ROOT, load_settings
+from .config import load_settings
+from .paths import DATA_HOME, ENV_FILE
 from .feishu import FeishuError
 from .feishu_native import NativeFeishu
 from .setup_config import SetupConfig, feishu_credentials
@@ -157,12 +158,12 @@ class SetupApp:
                         raise ValueError('请先配置负责人 open_id')
                     if not all(feishu_credentials(self.config.env_path)):
                         raise ValueError('请先配置飞书应用凭证')
-                    if self.config.env_path != PROJECT_ROOT / '.env':
+                    if self.config.env_path != ENV_FILE:
                         raise ValueError('服务启动仅支持项目默认凭证文件')
                     self.process = subprocess.Popen(
                         [sys.executable, '-m', 'ecom_twin.cli', '--config', str(self.config.config_path.resolve()), 'serve'],
                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        cwd=PROJECT_ROOT, start_new_session=True)
+                        cwd=DATA_HOME, start_new_session=True)
             return self.service_status()
         if path == '/api/service/stop':
             with self.lock:
