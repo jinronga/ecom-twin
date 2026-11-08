@@ -201,6 +201,22 @@ def test_dispatcher_can_mount_isolated_chrome_mcp(env, tmp_path):
     assert not chrome_tools & {"navigate_page", "new_page", "click", "fill", "fill_form", "evaluate_script"}
 
 
+def test_auto_login_policy_is_scoped_to_enabled_interactive_browser(env, tmp_path):
+    d, _ = dispatcher(env, tmp_path, {})
+    browser = env.app.settings.browser
+    browser.auto_login_domains = ['sxsd.topwms.com']
+    assert 'sxsd.topwms.com' not in d._browser_mode(None)
+    browser.enabled = True
+    policy = d._browser_mode(None)
+    assert 'sxsd.topwms.com' in policy and '主机名与名单完全一致' in policy
+    assert '此授权只允许登录' in policy and '不必再次询问' in policy
+    assert '不输密码、不替人登录' not in policy
+    browser.interactive = False
+    assert 'sxsd.topwms.com' not in d._browser_mode(None)
+    browser.interactive = True
+    assert 'sxsd.topwms.com' not in d._browser_mode('专用浏览器未启动')
+
+
 def test_dispatcher_mounts_chrome_through_guard_when_interactive(env, tmp_path):
     """默认放开（和数字分身一样）：经 chrome_guard 代理挂载，给跳转、点击、填写，不给上传本机文件。"""
     env.app.settings.browser.enabled = True

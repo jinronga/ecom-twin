@@ -83,6 +83,8 @@ class BrowserSettings:
     # 专用 Chrome 里 agent 能不能跳转、点击、填写、执行脚本（2026-10-30 负责人决定和数字分身一样放开）。
     # false = 只能读页面和截图。放开时经 chrome_guard 代理：下面这些词出现在网址或脚本里一律拒绝
     interactive: bool = True
+    # Owner-approved internal-platform hosts, matched exactly (no wildcard/subdomain grants).
+    auto_login_domains: list[str] = field(default_factory=list)
     interactive_blocked: list[str] = field(default_factory=lambda: [
         "sellercentral", "seller.tiktok", "seller-us.tiktok", "seller-uk.tiktok", "seller.tiktokglobalshop",
         "seller.noon", "noon.partners", "advertising.amazon", "ads.tiktok", "business.tiktok",
@@ -101,6 +103,17 @@ class BrowserSettings:
             raise ValueError("browser.browser_url 端口无效") from error
         if port is None or not 1 <= port <= 65535:
             raise ValueError("browser.browser_url 必须包含有效端口")
+        normalized = []
+        for domain in self.auto_login_domains:
+            host = domain.strip().lower()
+            parsed_host = urlsplit("https://" + host)
+            if (not host or parsed_host.hostname != host or parsed_host.path or parsed_host.query
+                    or parsed_host.fragment or "*" in host or "." not in host
+                    or is_store_backend(host) or any(word in host for word in self.interactive_blocked)):
+                raise ValueError("browser.auto_login_domains 只能填写允许操作的内部平台完整域名，不支持通配符或网址")
+            if host not in normalized:
+                normalized.append(host)
+        self.auto_login_domains = normalized
 
 
 # 卖货店铺后台：永远不允许分身用浏览器操作（DESIGN.md 13.1 账号风控）

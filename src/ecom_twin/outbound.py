@@ -105,4 +105,5 @@ class Outbound:
     def image_to(self, task_id: str, message_id: str, path: str) -> str:
         msg_id = self.app.feishu.reply_image(message_id, path)
         self.app.store.add_outbound(task_id, "", message_id, "image", "thread", path, msg_id)
+        self.app.store.link_report(msg_id, task_id)
         return msg_id

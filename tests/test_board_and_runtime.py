@@ -73,7 +73,10 @@ def test_codex_command_is_read_only_and_writes_agents_md(tmp_path):
     assert cmd[cmd.index("--sandbox") + 1] == "read-only"
     assert 'approval_policy="never"' in cmd
     assert (tmp_path / "AGENTS.md").read_text() == "你是运营分身"
-    assert rt.build_command(s, resume_id="th-1")[:4] == ["codex", "exec", "resume", "th-1"]
+    resumed = rt.build_command(s, resume_id="th-1")
+    assert resumed[-3:] == ["resume", "th-1", s.prompt]
+    assert resumed.index("--sandbox") < resumed.index("resume")
+    assert resumed.index("-C") < resumed.index("resume")
 
 
 def test_codex_events_are_normalized():
@@ -156,3 +159,37 @@ def test_codex_runs_with_isolated_home_and_builtin_computer_features_off(tmp_pat
     cmd = rt.build_command(spec(tmp_path))
     for feature in ("computer_use", "browser_use", "apps"):
         assert f"features.{feature}=false" in cmd
+
+
+def test_codex_preapproves_only_allowlisted_tools_in_new_and_resumed_runs(tmp_path):
+    import tomllib
+
+    s = RunSpec(prompt="p", system_prompt="s", workdir=tmp_path,
+                mcp_servers={"ecom": {"command": "py"},
+                             "chrome-devtools": {"command": "npx"},
+                             "unused": {"command": "py"}},
+                allowed_tools=["mcp__ecom__capture_page", "mcp__ecom__report_step",
+                               "mcp__chrome-devtools__take_screenshot"])
+    for resume_id in (None, "existing-thread"):
+        cmd = CodexRuntime().build_command(s, resume_id)
+        # Codex -c splits dotted paths before parsing the value; quoted key segments
+        # become literal quote characters and silently fail to match tool names.
+        config = {}
+        for i, arg in enumerate(cmd):
+            if arg != "-c":
+                continue
+            key, value = cmd[i + 1].split("=", 1)
+            parts = key.split(".")
+            target = config
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+            target[parts[-1]] = tomllib.loads("value=" + value)["value"]
+        assert config["approval_policy"] == "never"
+        assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+        for name, allowed in s.tools_by_server().items():
+            server = config["mcp_servers"][name]
+            assert server["enabled_tools"] == allowed
+            assert server.get("tools", {}) == {tool: {"approval_mode": "approve"} for tool in allowed}
+            assert "default_tools_approval_mode" not in server
+        assert config["features"]["shell_tool"] is False
+        assert config["features"]["unified_exec"] is False

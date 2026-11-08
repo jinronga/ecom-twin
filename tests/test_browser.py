@@ -127,6 +127,19 @@ def test_capture_page_rejects_bad_url(tmp_path):
         capture_page("https://evil.com/x", tmp_path, settings)
 
 
+def test_capture_page_reports_network_error_when_chrome_exits_zero_without_image(monkeypatch, tmp_path):
+    import subprocess
+    from ecom_twin.browser import capture_page
+    monkeypatch.setattr('ecom_twin.browser.find_chrome', lambda _: 'chrome')
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, '',
+            'profile=/private/secret Page load failed: net::ERR_HTTP2_PROTOCOL_ERROR')
+    monkeypatch.setattr('ecom_twin.browser.subprocess.run', run)
+    with pytest.raises(BrowserError, match='net::ERR_HTTP2_PROTOCOL_ERROR') as error:
+        capture_page('https://www.noon.com/uae-en/', tmp_path, BrowserSettings())
+    assert '专用浏览器' in str(error.value) and '/private/secret' not in str(error.value)
+
+
 def test_report_step_accepts_evidence(tmp_path, env):
     """测试 report_step 支持 evidence 参数"""
     from ecom_twin.mcp_server import ToolServer

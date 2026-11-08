@@ -31,11 +31,34 @@ class NativeFeishu(LarkCliFeishu):
             headers['Authorization'] = 'Bearer ' + token
         request = urllib.request.Request(BASE_URL + path, method=method, headers=headers,
                                          data=json.dumps(data).encode() if data is not None else None)
+        return self._json_response(request)
+
+    def _http_error(self, error: urllib.error.HTTPError) -> FeishuError:
+        try:
+            with error:
+                payload = json.load(error)
+        except (ValueError, OSError):
+            return FeishuError(f'飞书 HTTP {error.code}：请求失败，返回内容不是有效 JSON')
+        try:
+            self._validate_payload(payload)
+        except FeishuError as detail:
+            return FeishuError(f'HTTP {error.code}：{detail}')
+        return FeishuError(f'飞书 HTTP {error.code}：请求被拒绝')
+
+    def _json_response(self, request):
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.load(response)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        except urllib.error.HTTPError as error:
+            raise self._http_error(error) from None
+        except (urllib.error.URLError, TimeoutError):
             raise FeishuError('飞书网络请求失败，请检查网络后重试') from None
+        except (ValueError, UnicodeError):
+            raise FeishuError('飞书返回格式不正确：不是有效 JSON') from None
+        self._validate_payload(payload)
+        return payload
+
+    def _validate_payload(self, payload):
         if not isinstance(payload, dict):
             raise FeishuError('飞书返回格式不正确')
         if payload.get('code', 0) != 0:
@@ -46,7 +69,6 @@ class NativeFeishu(LarkCliFeishu):
                 if secret:
                     message = message.replace(secret, '[已隐藏]')
             raise FeishuError(f'飞书接口错误 {code}：{message[:300]}')
-        return payload
 
     def tenant_token(self):
         with self._lock:
@@ -84,13 +106,13 @@ class NativeFeishu(LarkCliFeishu):
                                          headers={'Authorization': 'Bearer ' + self.tenant_token(),
                                                   'Content-Type': f'multipart/form-data; boundary={boundary}'})
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                payload = json.load(response)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            raise FeishuError('上传图片失败：飞书网络请求失败') from None
-        image_key = ((payload or {}).get('data') or {}).get('image_key')
-        if payload.get('code', 0) != 0 or not image_key:
-            raise FeishuError(f"上传图片失败：{str(payload.get('msg') or '没有返回 image_key')[:200]}")
+            payload = self._json_response(request)
+        except FeishuError as error:
+            raise FeishuError(f'上传图片失败：{error}') from None
+        data = payload.get('data')
+        image_key = data.get('image_key') if isinstance(data, dict) else None
+        if not image_key:
+            raise FeishuError('上传图片失败：没有返回 image_key')
         data = self._api('POST', f'/open-apis/im/v1/messages/{message_id}/reply',
                          data={'msg_type': 'image', 'content': json.dumps({'image_key': image_key})})
         return data['message_id']
@@ -133,7 +155,11 @@ class NativeFeishu(LarkCliFeishu):
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
-            raise FeishuError('飞书图片下载失败') from error
+            if isinstance(error, urllib.error.HTTPError):
+                raise FeishuError(f'飞书图片下载失败：{self._http_error(error)}') from None
+            if isinstance(error, FeishuError):
+                raise FeishuError(f'飞书图片下载失败：{error}') from None
+            raise FeishuError('飞书图片下载失败：网络或本地文件读写失败') from None
 
 
 def normalize_message(payload: dict[str, Any]) -> dict[str, Any] | None:

@@ -61,6 +61,7 @@ class ConsoleApp:
         if f.section == "shadow":
             return settings.shadow_actions
         holder = {"limits": settings.limits, "feishu": settings.feishu, "intake": settings.intake,
+                  "browser": settings.browser, "computer_use": settings.computer_use,
                   "runtime": settings.runtime, "approval": settings}.get(f.section)
         return getattr(holder, f.key, None)
 

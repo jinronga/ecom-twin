@@ -26,6 +26,19 @@ def test_config_view_lists_fields_with_current_values(tmp_path):
     fields = {(f["section"], f["key"]): f for f in data["fields"]}
     assert fields[("limits", "allowed_shops")]["value"] == ["tiktok:1"] and fields[("limits", "allowed_shops")]["high_risk"]
     assert set(fields[("approvers", "")]["value"]) == {"tiktok:1", "tiktok:2"}
+    assert fields[("browser", "auto_login_domains")]["value"] == []
+    assert fields[("browser", "interactive")]["value"] is True
+    assert fields[("computer_use", "enabled")]["value"] is False
+
+
+def test_auto_login_console_setting_roundtrips_and_rejects_broad_grants(tmp_path):
+    app, cfg, _ = console(tmp_path)
+    body = {"section": "browser", "key": "auto_login_domains", "value": ["sxsd.topwms.com"], "confirm": True}
+    assert call(app, "POST", "/api/config", body)[0] == 200
+    fields = call(app, "GET", "/api/config")[1]["fields"]
+    assert next(f for f in fields if f["key"] == "auto_login_domains")["value"] == ["sxsd.topwms.com"]
+    assert call(app, "POST", "/api/config", {**body, "value": ["*.topwms.com"]})[0] == 400
+    assert load_settings(cfg).browser.auto_login_domains == ["sxsd.topwms.com"]
 
 
 def test_normal_field_saves_to_override_file_without_touching_settings(tmp_path):

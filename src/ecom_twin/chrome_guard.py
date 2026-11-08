@@ -118,8 +118,15 @@ class ChromeGuard(Proxy):
 
 
 def _clip(args: dict) -> dict:
-    """审计里的参数截短；fill 填的值可能是业务数据，照记（密码类不该由 agent 填，提示词已禁止）。"""
-    return {k: (v[:500] if isinstance(v, str) else v) for k, v in args.items()}
+    """Audit action/target metadata without input values or scripts containing credentials."""
+    hidden = {"value", "text", "password", "username", "function", "script", "expression", "arguments"}
+    def redact(value):
+        if isinstance(value, dict):
+            return {k: "[已隐藏输入]" if k.lower() in hidden else redact(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [redact(v) for v in value]
+        return value[:500] if isinstance(value, str) else value
+    return redact(args)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -5,6 +5,7 @@ import json
 import sys
 
 import subprocess
+import pytest
 
 from ecom_twin.chrome_guard import ChromeGuard, upstream_command, verify_dedicated
 from ecom_twin.config import BrowserSettings
@@ -105,3 +106,31 @@ def test_verify_dedicated_only_accepts_the_configured_profile(tmp_path):
     other = verify_dedicated(browser, run=fake_ps(f"{chrome} --user-data-dir=/Users/x/other"))
     assert "/Users/x/other" in other
     assert "没启动" in verify_dedicated(browser, run=fake_ps(None))
+
+
+@pytest.mark.parametrize('domain', ['https://sxsd.topwms.com', '*.topwms.com',
+                                   'sxsd.topwms.com/login', 'sellercentral.amazon.com',
+                                   'user:pass@sxsd.topwms.com', 'sxsd.topwms.com:443'])
+def test_auto_login_domains_require_exact_allowed_host(domain):
+    with pytest.raises(ValueError, match='auto_login_domains'):
+        BrowserSettings(auto_login_domains=[domain])
+
+
+def test_auto_login_domains_are_explicit_and_normalized():
+    assert BrowserSettings().auto_login_domains == []
+    assert BrowserSettings(auto_login_domains=[' SXSD.TOPWMS.COM ', 'sxsd.topwms.com']).auto_login_domains == ['sxsd.topwms.com']
+
+
+def test_browser_audit_redacts_form_values_and_scripts(tmp_path):
+    replies, audits = run_guard(tmp_path, [
+        {'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {}},
+        call(1, 'fill', {'uid': 'password-field', 'value': 'fixture-password'}),
+        call(2, 'fill_form', {'elements': [{'uid': 'account-field', 'value': 'fixture-account'}]}),
+        call(3, 'type_text', {'text': 'fixture-password'}),
+        call(4, 'evaluate_script', {'function': '() => "fixture-password"'}),
+    ])
+    # Upstream receives the real input; persistent action audit retains only target and action.
+    assert 'fixture-password' in replies[1]['result']['content'][0]['text']
+    logged = json.dumps(audits)
+    assert 'fixture-password' not in logged and 'fixture-account' not in logged
+    assert 'password-field' in logged

@@ -92,15 +92,19 @@ def capture_page(url: str, out_dir: Path, settings: BrowserSettings, width: int 
             "--virtual-time-budget=8000"]
     try:
         try:
-            dom = subprocess.run(base + ["--dump-dom", url], capture_output=True, text=True,
-                                 timeout=settings.timeout_sec).stdout
-            subprocess.run(base + [f"--screenshot={shot}", url], capture_output=True,
-                           timeout=settings.timeout_sec)
+            page = subprocess.run(base + ["--dump-dom", url], capture_output=True, text=True,
+                                  timeout=settings.timeout_sec)
+            screenshot = subprocess.run(base + [f"--screenshot={shot}", url], capture_output=True,
+                                        text=True, timeout=settings.timeout_sec)
         except subprocess.TimeoutExpired as error:
             raise BrowserError(f"打开页面超时（{settings.timeout_sec:.0f} 秒）：{url}") from error
     finally:
         shutil.rmtree(profile, ignore_errors=True)
     if not shot.exists():
-        raise BrowserError(f"截图失败：{url}")
-    title, text = page_text(dom or "")
+        # Chrome can exit 0 without a screenshot on page-load failures. Expose the
+        # network error code only; stderr can contain private URLs and profile paths.
+        codes = re.findall(r"net::ERR_[A-Z0-9_]+", (screenshot.stderr or "") + (page.stderr or ""))
+        reason = codes[0] if codes else f"Chrome 退出码 {screenshot.returncode}，未生成截图文件"
+        raise BrowserError(f"截图失败：{reason}。可尝试已配置的专用浏览器截图工具；不要报告已交付截图")
+    title, text = page_text(page.stdout or "")
     return Capture(url, title, text, shot)

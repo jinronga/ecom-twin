@@ -139,6 +139,8 @@ user_data_dir = ""
 # 放开时经 ecom-twin 代理：网址或脚本里出现下面这些词一律拒绝（卖货店铺后台、广告后台只走官方 API 和提案），每次操作写审计。
 # 专用 Chrome 里不要登录卖货后台：已经开着的标签页，代理拦不住 agent 切过去点。
 interactive = true
+# 负责人允许自动登录的内部平台完整域名（不含子域名；只使用负责人提供的凭证）
+auto_login_domains = []  # 例：["sxsd.topwms.com"]；验证码/短信/MFA仍请负责人处理
 # interactive_blocked = ["sellercentral", "seller.tiktok", "advertising.amazon", "ads.tiktok", "91miaoshou"]   # 不填用内置默认
 
 # 功能5：只读网页取证。agent 用 capture_page 打开公开页面截图取证，

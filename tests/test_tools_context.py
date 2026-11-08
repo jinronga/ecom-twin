@@ -159,7 +159,37 @@ def test_report_attaches_evidence_from_this_run(env, tmp_path):
     d.run_task(env.task.id, "看看竞品", resume=False)
     images = [m for m in env.feishu.sent if m["type"] == "image"]
     assert len(images) == 1 and images[0]["path"] == str(shot)
+    assert env.app.store.task_for_reply(images[0]["message_id"])[0] == env.task.id
     # 交付前自检：坏图不悄悄少一张，汇报里写明哪张、为什么，留审计
     report = next(m["text"] for m in reversed(env.feishu.sent) if m["type"] in ("reply", "text") and "状态：" in m["text"])
     assert "1 张证据图没能附上" in report and "「后台截图」的 fake.png 不是有效的 PNG" in report
     assert "evidence_invalid" in env.app.store.audit_events(env.task.id)
+
+
+def test_failed_image_delivery_reports_reason_and_continues_other_images(env, tmp_path, monkeypatch):
+    from test_mcp_and_dispatcher import dispatcher
+    from ecom_twin.feishu import FeishuError
+    from ecom_twin.models import TaskStatus
+    d, _ = dispatcher(env, tmp_path, {})
+    task = env.app.store.get_task(env.task.id)
+    task.origin_message_id = 'om_original'
+    env.app.store.save_task(task)
+    env.app.tasks.set_status(task.id, TaskStatus.CLOSED)
+    original = env.feishu.reply_image
+    def upload(mid, path):
+        if path == 'bad.png':
+            raise FeishuError('HTTP 400: 99991672 missing im:resource:upload')
+        return original(mid, path)
+    monkeypatch.setattr(env.feishu, 'reply_image', upload)
+    d._attach_evidence(task.id, 'om_report', ['bad.png', 'good.png'])
+    assert len([m for m in env.feishu.sent if m['type'] == 'image']) == 1
+    notice = env.feishu.sent[-1]
+    assert notice['reply_to'] == 'om_report'
+    assert '1 张截图未发送成功' in notice['text'] and 'im:resource:upload' in notice['text']
+    assert env.app.store.task_for_reply(notice['message_id'])[0] == task.id
+    assert env.app.store.get_task(task.id).status == TaskStatus.FAILED
+    assert 'evidence_upload_failed' in env.app.store.audit_events(task.id)
+    # If the notification also fails, preserve an audit trail without crashing the worker.
+    monkeypatch.setattr(d.outbound, 'to_task', lambda *a, **kw: (_ for _ in ()).throw(FeishuError('offline')))
+    d._attach_evidence(task.id, 'om_report', ['bad.png'])
+    assert 'evidence_notice_failed' in env.app.store.audit_events(task.id)

@@ -90,8 +90,6 @@ class CodexRuntime(AgentRuntime):
 
     def build_command(self, spec: RunSpec, resume_id: str | None = None) -> list[str]:
         cmd = [self.binary, "exec"]
-        if resume_id:
-            cmd += ["resume", resume_id]
         cmd += ["--json", "--sandbox", "read-only", "--skip-git-repo-check", "-C", str(spec.workdir),
                 "-c", 'approval_policy="never"']
         for feature in _DISABLED_FEATURES:
@@ -102,8 +100,18 @@ class CodexRuntime(AgentRuntime):
                     "-c", f"mcp_servers.{name}.args={json.dumps(server.get('args', []))}"]
             # 只开放白名单里的工具（Codex 的 enabled_tools），没有白名单的 server 一个工具都不给
             cmd += ["-c", f"mcp_servers.{name}.enabled_tools={json.dumps(allowed.get(name, []))}"]
+            # enabled_tools 只控制可见性，不代表批准调用。无头运行不能弹出审批；仅对本轮白名单工具
+            # 显式批准，平台写操作仍由 ecom-twin 的提案/执行器审批，浏览器与电脑代理继续检查权限。
+            for tool in allowed.get(name, []):
+                # Tool names come from the MCP protocol and use identifier characters only. Do not
+                # JSON-quote this TOML dotted-key segment: Codex treats a quoted segment as a
+                # literal key and falls back to its default approval mode.
+                cmd += ["-c", f'mcp_servers.{name}.tools.{tool}.approval_mode="approve"']
         if spec.model:
             cmd += ["--model", spec.model]
+        # --sandbox / -C belong to exec, not the resume subcommand.
+        if resume_id:
+            cmd += ["resume", resume_id]
         cmd.append(spec.prompt)
         return cmd
 

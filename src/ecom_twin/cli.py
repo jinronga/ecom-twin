@@ -181,6 +181,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     errors += not ok
     print(f"  {'可用' if ok else '不可用'}：{detail}")
     print(f"\n自检结果：{'全部通过' if not errors else f'{errors} 项需要处理'}")
+    print("检查范围：配置、CLI 可用性及基础接口连接；不代表 Agent 工具调用、图片上传或业务执行已验收。")
     return 0 if not errors else 1
 
 
@@ -217,11 +218,13 @@ def _dispatcher(app, config: str | None, pool=None, judge=None) -> Dispatcher:
 
 
 def _judge(app):
-    """合并判定用的廉价模型：用本机 Claude Code CLI；不可用时返回 None，入口只按规则（回复、锚点）合并。"""
-    from .intake import ClaudeJudge
+    """Codex 任务使用同一可用底座判定归属，不依赖另一个账号的 Haiku 模型。"""
+    from .intake import ClaudeJudge, RuntimeJudge
     from .runtime import resolve
     if not app.settings.intake.judge_enabled:
         return None
+    if app.settings.runtime.default == "codex":
+        return RuntimeJudge(lambda: build_runtime("codex", app.settings.runtime.cli))
     path, _ = resolve("claude_code", app.settings.runtime.cli.get("claude_code", ""))
     return ClaudeJudge(path, app.settings.intake.judge_model) if path else None
 

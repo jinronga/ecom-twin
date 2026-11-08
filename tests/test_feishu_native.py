@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import urllib.error
 from unittest.mock import patch
 
 import pytest
@@ -73,6 +74,74 @@ def test_native_errors_redact_credentials(monkeypatch):
         client.tenant_token()
     assert 'private-fixture' not in str(error.value)
     assert '10003' in str(error.value)
+
+
+@pytest.mark.parametrize('operation', ['request', 'upload', 'download'])
+def test_http_permission_errors_keep_code_scope_and_redact_secrets(monkeypatch, tmp_path, operation):
+    client = NativeFeishu('cli_fixture', 'private-fixture')
+    client._token = 'memory-token'
+    monkeypatch.setattr(client, 'tenant_token', lambda: client._token)
+    def transport(request, **kwargs):
+        body = json.dumps({'code': 99991672,
+                           'msg': 'Access denied: im:resource:upload private-fixture memory-token'}).encode()
+        raise urllib.error.HTTPError(request.full_url, 400, 'Bad Request', {}, io.BytesIO(body))
+    monkeypatch.setattr('urllib.request.urlopen', transport)
+    image = tmp_path / 'shot.png'
+    image.write_bytes(b'fixture')
+    with pytest.raises(FeishuError) as error:
+        if operation == 'request':
+            client._api('GET', '/open-apis/bot/v3/info')
+        elif operation == 'upload':
+            client.reply_image('om_parent', str(image))
+        else:
+            client.download_image('om_parent', 'img_key', tmp_path / 'download')
+    message = str(error.value)
+    assert 'HTTP 400' in message and '99991672' in message and 'im:resource:upload' in message
+    assert '网络' not in message
+    assert 'private-fixture' not in message and 'memory-token' not in message
+    assert not list(tmp_path.glob('.*.tmp'))
+
+
+@pytest.mark.parametrize('response', [b'not-json', b'[]', b'{"code":0,"data":[]}'])
+def test_image_upload_rejects_malformed_responses(monkeypatch, tmp_path, response):
+    client = NativeFeishu('cli_fixture', 'private-fixture')
+    monkeypatch.setattr(client, 'tenant_token', lambda: 'memory-token')
+    monkeypatch.setattr('urllib.request.urlopen', lambda *a, **k: io.BytesIO(response))
+    image = tmp_path / 'shot.png'
+    image.write_bytes(b'fixture')
+    with pytest.raises(FeishuError, match='上传图片失败'):
+        client.reply_image('om_parent', str(image))
+
+
+def test_non_json_http_error_does_not_echo_response_body(monkeypatch):
+    client = NativeFeishu('cli_fixture', 'private-fixture')
+    def transport(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 502, 'Bad Gateway', {},
+                                     io.BytesIO(b'proxy page contains private-fixture'))
+    monkeypatch.setattr('urllib.request.urlopen', transport)
+    with pytest.raises(FeishuError, match='HTTP 502') as error:
+        client.tenant_token()
+    assert 'private-fixture' not in str(error.value)
+
+
+def test_native_image_upload_replies_to_original_message(monkeypatch, tmp_path):
+    client = NativeFeishu('cli_fixture', 'private-fixture')
+    monkeypatch.setattr(client, 'tenant_token', lambda: 'memory-token')
+    requests = []
+    responses = [{'code': 0, 'data': {'image_key': 'img_fixture'}},
+                 {'code': 0, 'data': {'message_id': 'om_image'}}]
+    def transport(request, **kwargs):
+        requests.append(request)
+        return io.BytesIO(json.dumps(responses.pop(0)).encode())
+    monkeypatch.setattr('urllib.request.urlopen', transport)
+    image = tmp_path / 'shot.png'
+    image.write_bytes(b'fixture')
+    assert client.reply_image('om_parent', str(image)) == 'om_image'
+    assert requests[0].full_url.endswith('/im/v1/images')
+    assert requests[1].full_url.endswith('/im/v1/messages/om_parent/reply')
+    payload = json.loads(requests[1].data)
+    assert payload['msg_type'] == 'image'
+    assert json.loads(payload['content']) == {'image_key': 'img_fixture'}
 
 
 def test_native_downloads_image_to_private_task_path(monkeypatch, tmp_path):

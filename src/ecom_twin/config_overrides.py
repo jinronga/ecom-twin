@@ -56,6 +56,7 @@ FIELDS = [
     Field("intake", "anchor_patterns", "锚点正则", "list"),
     Field("intake", "judge_enabled", "启用廉价模型合并判定", "bool"),
     Field("browser", "interactive", "允许 agent 在专用 Chrome 里跳转、点击、填写（卖货后台仍拦截）", "bool", True),
+    Field("browser", "auto_login_domains", "允许自动登录的内部平台完整域名（由负责人指定）", "list", True),
     Field("computer_use", "enabled", "允许 agent 操作电脑上的任意软件（借用本机 Codex Computer Use）", "bool", True),
     Field("computer_use", "allowed_apps", "允许 agent 操作的软件（名称或 bundle ID）", "list", True),
     Field("computer_use", "applescript", "允许 agent 用 Bash 跑 AppleScript 等命令操作电脑（数字分身的做法）", "bool", True),

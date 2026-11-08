@@ -282,9 +282,24 @@ class Dispatcher:
                     "在汇报里写明卡点，请负责人运行 ecom-twin browser start 后再派。\n")
         browser = getattr(self.app.settings, "browser", None)
         name = "browser_interactive.md" if browser and browser.interactive else "browser_readonly.md"
-        return (PROMPT_FILE.parent / name).read_text(encoding="utf-8")
+        text = (PROMPT_FILE.parent / name).read_text(encoding="utf-8")
+        domains = browser.auto_login_domains if browser and browser.enabled and browser.interactive else []
+        text += "\n### 本轮自动登录权限\n"
+        if domains:
+            text += "负责人已允许自动登录的完整域名：" + "、".join(domains) + "。\n"
+            text += ("只在专用 Chrome 中操作：先用页面快照核对当前 URL 是 HTTPS 且主机名与名单完全一致，"
+                     "然后可使用负责人为该平台明确提供的账号密码填写登录表单并点击登录，不必再次询问。"
+                     "名单不包含其子域名，也不授权跳转后的第三方登录域名。缺少凭证、跳到名单外、"
+                     "遇到验证码/短信/MFA或登录失败时停止登录并请负责人协助，不猜密码、不反复尝试。"
+                     "不得在汇报、记忆、提案中复述凭证，不截取明文密码。登录后先核实成功，再执行本次查询。"
+                     "此授权只允许登录，不包含创建单据、审批、删除、改价等业务操作。\n")
+        else:
+            text += "当前没有已授权自动登录的域名；需要登录时请负责人完成。\n"
+        return text
 
     def _spec(self, task_id: str, prompt: str) -> RunSpec:
+        from .chat_context import automatic_context
+        context = automatic_context(self.app, task_id)
         evidence_dir = self.workroot / task_id / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         browser = getattr(self.app.settings, "browser", None)
@@ -325,7 +340,7 @@ class Dispatcher:
             mcp_servers[COMPUTER_SERVER] = computer
             allowed_tools += [f"mcp__{COMPUTER_SERVER}__{name}" for name in COMPUTER_TOOLS]
         return RunSpec(
-            prompt=prompt, system_prompt=system, workdir=self.workroot / task_id,
+            prompt=context + prompt, system_prompt=system, workdir=self.workroot / task_id,
             mcp_servers=mcp_servers,
             allowed_tools=allowed_tools,
             shell_commands=list(cu.shell_commands) if cu.applescript else [],
@@ -578,9 +593,22 @@ class Dispatcher:
         return images, broken
 
     def _attach_evidence(self, task_id: str, report_id: str, images: list[str]) -> None:
-        """把校验过的证据截图附在汇报下面。上传失败不影响汇报。"""
+        """把校验过的证据截图附在汇报下面；交付失败必须反馈，不能只留内部日志。"""
+        failures = []
         for image in images:
             try:
                 self.outbound.image_to(task_id, report_id, image)
-            except Exception as e:  # noqa: BLE001 —— 证据上传失败只记录
+            except Exception as e:  # noqa: BLE001 —— 一张上传失败仍尝试其余图片
                 self.app.store.audit("task", task_id, "evidence_upload_failed", "system", {"error": str(e)})
+                failures.append(f"{Path(image).name}：{str(e)[:400]}")
+        if failures:
+            warning = f"[{task_id}] 有 {len(failures)} 张截图未发送成功：" + "；".join(failures)
+            warning += "。上一条汇报中的附图尚未全部交付，修复后请回复重试。"
+            task = self.app.store.get_task(task_id)
+            if task and task.status == TaskStatus.CLOSED:
+                self.app.tasks.set_status(task_id, TaskStatus.FAILED, blocker="截图交付失败，请查看发送错误")
+            try:
+                message_id = self.outbound.to_task(task_id, warning, "report", reply_to=report_id)
+                self.app.store.link_report(message_id, task_id)
+            except Exception as error:
+                self.app.store.audit("task", task_id, "evidence_notice_failed", "system", {"error": str(error)})
