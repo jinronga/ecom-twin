@@ -31,6 +31,14 @@ COOKIE = "ecom_twin_console"
 MEMORY_TYPES = ["experience", "calendar", "fact", "preference"]
 
 
+def task_json(task) -> dict[str, Any]:
+    """Only expose task overview fields, not session IDs, transcripts or chat identifiers."""
+    fields = ("id", "title", "scene", "shop_key", "runtime", "current_step", "conclusion",
+              "blocker", "waiting", "created_at", "updated_at")
+    return {**{key: getattr(task, key) for key in fields},
+            "status": task.status.value, "source": task.source.value}
+
+
 def memory_json(m, graph: dict | None = None) -> dict[str, Any]:
     links = (graph or {}).get(m.name, {})
     # sha256：保存时带回来，期间文件被别处改过就拒绝保存（防覆盖）
@@ -125,6 +133,16 @@ class ConsoleApp:
     def route(self, method: str, path: str, query: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         parts = [unquote(p) for p in path.split("/") if p][1:]  # 去掉 "api"；中文标识在 URL 里是编码过的
         try:
+            if parts == ["tasks"] and method == "GET":
+                return 200, {"tasks": [task_json(task) for task in self.store.list_tasks()]}
+            if len(parts) == 2 and parts[0] == "tasks" and method == "GET":
+                task = self.store.get_task(parts[1])
+                if task is None:
+                    return 404, {"error": "任务不存在"}
+                steps = [{"name": s.name, "status": s.status.value, "summary": s.summary,
+                          "error": s.error, "started_at": s.started_at, "ended_at": s.ended_at}
+                         for s in self.store.list_steps(task.id)]
+                return 200, {"task": task_json(task), "steps": steps}
             if parts == ["memories"] and method == "GET":
                 graph = self.memory.graph()
                 return 200, {"memories": [memory_json(m, graph) for m in self.memory.all()], "types": MEMORY_TYPES,

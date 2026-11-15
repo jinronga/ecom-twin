@@ -52,3 +52,21 @@ def test_start_chrome_uses_new_instance_and_skips_busy_port(tmp_path, monkeypatc
     chrome.write_text('')
     evidence.start_chrome(chrome_path=str(chrome), user_data_dir=str(tmp_path / 'profile'), port=9300)
     assert calls[0][0] == str(chrome) and '/usr/bin/open' not in calls[0]           # 自定义 Chrome 直接启动
+
+
+def test_start_chrome_strict_port_never_moves_to_another_browser_port(tmp_path, monkeypatch):
+    import ecom_twin.evidence as evidence
+    class Probe:
+        def __init__(self, *args): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def setsockopt(self, *args): pass
+        def connect_ex(self, address): return 0
+    monkeypatch.setattr(evidence.socket, 'socket', Probe)
+    def unexpected(*args, **kwargs):
+        pytest.fail('busy port must not launch Chrome')
+    monkeypatch.setattr(evidence.subprocess, 'Popen', unexpected)
+    chrome = tmp_path / 'Chrome'
+    chrome.write_text('')
+    with pytest.raises(RuntimeError, match='已被占用'):
+        evidence.start_chrome(chrome_path=str(chrome), port=9222, strict_port=True)

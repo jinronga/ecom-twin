@@ -134,3 +134,47 @@ def test_browser_audit_redacts_form_values_and_scripts(tmp_path):
     logged = json.dumps(audits)
     assert 'fixture-password' not in logged and 'fixture-account' not in logged
     assert 'password-field' in logged
+
+
+def test_ensure_dedicated_starts_missing_browser_and_waits_for_devtools():
+    from ecom_twin.chrome_guard import ensure_dedicated
+    browser = BrowserSettings(enabled=True, browser_url='http://127.0.0.1:9666', user_data_dir='/tmp/test-profile')
+    reasons = iter(['端口 9666 上没有 Chrome，专用浏览器没启动', None, None])
+    readiness = iter([False, True])
+    launches = []
+    def launch(*args, **kwargs):
+        launches.append((args, kwargs))
+        return 9666
+    assert ensure_dedicated(browser, check=lambda b: next(reasons), launch=launch,
+                            ready=lambda b: next(readiness), sleep=lambda _: None) is None
+    assert launches == [(('', '/tmp/test-profile', 9666), {'strict_port': True})]
+
+
+def test_ensure_dedicated_reuses_browser_without_launching():
+    from ecom_twin.chrome_guard import ensure_dedicated
+    def unexpected(*args, **kwargs):
+        pytest.fail('must not launch')
+    assert ensure_dedicated(BrowserSettings(enabled=True), check=lambda b: None,
+                            ready=lambda b: True, launch=unexpected) is None
+
+
+@pytest.mark.parametrize('reason', ['端口 9222 上的 Chrome 不是专用浏览器', '查不了端口 9222 上的进程'])
+def test_ensure_dedicated_never_launches_over_wrong_or_unknown_process(reason):
+    from ecom_twin.chrome_guard import ensure_dedicated
+    def unexpected(*args, **kwargs):
+        pytest.fail('must not launch')
+    assert ensure_dedicated(BrowserSettings(enabled=True), check=lambda b: reason, launch=unexpected) == reason
+
+
+def test_ensure_dedicated_disabled_failure_and_timeout():
+    from ecom_twin.chrome_guard import ensure_dedicated
+    assert '未启用' in ensure_dedicated(BrowserSettings())
+    browser = BrowserSettings(enabled=True)
+    missing = lambda b: '端口 9222 上没有 Chrome，专用浏览器没启动'
+    def fail(*args, **kwargs):
+        raise OSError('fixture launch error')
+    assert 'fixture launch error' in ensure_dedicated(browser, check=missing, launch=fail)
+    assert '未就绪' in ensure_dedicated(browser, check=missing, launch=lambda *a, **k: 9222,
+                                      ready=lambda b: False, sleep=lambda _: None, attempts=2)
+    assert '未就绪' in ensure_dedicated(browser, check=lambda b: None, ready=lambda b: False,
+                                      sleep=lambda _: None, attempts=2)

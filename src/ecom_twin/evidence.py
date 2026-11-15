@@ -156,7 +156,7 @@ def desktop(window_id: str, destination: Path, box: tuple[int, int, int, int] | 
 
 
 def start_chrome(chrome_path: str = "", user_data_dir: str = "", port: int = 9222,
-                 url: str = "about:blank") -> int:
+                 url: str = "about:blank", *, strict_port: bool = False) -> int:
     """启动隔离的专用 Chrome；不复用日常用户目录，返回实际调试端口。"""
     executable = chrome_path or "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     if not 1 <= int(port) <= 65535:
@@ -170,6 +170,8 @@ def start_chrome(chrome_path: str = "", user_data_dir: str = "", port: int = 922
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if probe.connect_ex(("127.0.0.1", port)) != 0:
                 break
+        if strict_port:
+            raise RuntimeError(f"调试端口 {port} 已被占用，未启动其他端口的浏览器")
         port += 1
         if port > 65535:
             raise RuntimeError("找不到可用的 Chrome 调试端口")

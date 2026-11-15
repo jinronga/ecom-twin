@@ -1,110 +1,316 @@
-# ecom-twin · 跨境电商运营数字分身
+<div align="center">
 
-以飞书为入口的运营分身：盯着消息和定时任务，产出操作提案，经人审批后执行，全程留痕。
+# ecom-twin
 
-- 设计：[DESIGN.md](DESIGN.md)
-- 实现进度（哪些做了、哪些没做）：[PROGRESS.md](PROGRESS.md)
+### 跨境电商运营 AI 分身
+
+让任务从一句飞书消息，走到有上下文、有审批、有证据的交付。
+
+**Feishu · AI Agents · MCP · Miaoshou ERP · Chrome**
+
+[快速开始](#快速开始) · [核心能力](#核心能力) · [工作原理](#工作原理) · [配置指南](#配置指南) · [开发与验证](#开发与验证)
+
+</div>
+
+---
+
+## 项目简介
+
+ecom-twin 是一个运行在本机、以飞书为入口的电商运营 Agent。它连接 AI CLI、业务工具和审批流程，帮助运营人员查询店铺数据、准备 Listing、读取仓库页面、整理截图证据，并持续跟进同一件事。
+
+模型负责理解上下文、分析问题和组织方案；代码负责确定性计算、工具调用范围、审批校验和执行记录。负责人通过飞书交办任务，通过控制台维护规则和经验。
+
+> 当前版本处于持续开发与真实环境验证阶段。已实现能力不等于所有平台流程均已验收；业务执行范围见[当前状态](#当前状态)。
+
+## 核心能力
+
+| 能力 | 可以怎样使用 |
+| --- | --- |
+| **自动理解上下文** | 每轮自动补充来源会话近 24 小时记录、任务原消息、引用和话题回复；最多保留 30 条，并限制总长度 |
+| **连续任务协作** | 引用回复续跑原任务；明确说“继续处理”且只有一个近期未完成任务时直接续接，多个候选无法确定时询问任务号 |
+| **多运行时接入** | 接入 Codex、Claude Code，另有 Cursor Agent、OpenCode 适配器；支持运行记录、重试和备选运行时 |
+| **Listing 准备与审核** | 通过妙手采集货源、编辑采集箱草稿、认领商品、检查合规、比较修改前后内容并提交发布提案 |
+| **业务审批** | 发布等受支持的执行动作经过提案、审批与校验，支持有效期、代理审批和高风险双人审批 |
+| **浏览器与证据** | 公开网页取证、专用 Chrome 操作内部平台、截图校验和飞书图片交付 |
+| **业务记忆与 SOP** | 按动作读取 Markdown 记忆、按场景加载 SOP；记忆修改经人工审核，支持历史、回滚、导入与导出 |
+| **运营控制台** | 查看任务、Listing 差异、记忆草稿、召回记录、规则、成本与审计；区分负责人和运营审阅角色 |
+| **日报与常驻服务** | 导入 ERP 表格计算日报指标和异常；macOS 通过 launchd 管理后台服务 |
+
+可以直接在飞书向机器人交办：
+
+```text
+列出已授权的 TikTok 店铺。
+截取这个公开商品页面，把图片回复给我。
+检查这批采集箱商品的标题和 SKU，整理发布前需要确认的问题。
+结合前面的要求继续处理，只改标题，不改价格。
+```
+
+以上是任务示例；涉及的账号权限、数据源和平台配置需要事先准备好。
+
+## 工作原理
+
+```text
+飞书消息 / 定时任务
+        │
+        ▼
+任务入口 ── 过滤、合并、引用关系、自动聊天上下文
+        │
+        ▼
+Agent Runtime ── Codex / Claude Code / 其他适配器
+        │
+        ▼
+MCP 工具 ── 业务查询 · 记忆 · SOP · 浏览器 · 提案
+        │
+        ├── 查询 / 分析 / 证据 ──────────────┐
+        ├── 暂存区草稿修改 ── 合规检查与留痕 ──┤
+        └── 发布等执行动作 ── 人工审批 ── 执行器 ┤
+                                              ▼
+                                    结果核验 → 飞书交付
+```
+
+任务状态、提案、步骤和审计记录保存在 SQLite；业务记忆保存在 Markdown 文件中。每轮输入包含任务卡和记忆索引，Agent 按需读取记忆全文。聊天记录、网页和工具结果作为背景数据处理，不能替代系统规则或审批授权。
 
 ## 快速开始
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+### 1. 安装与离线体验
 
-.venv/bin/ecom-twin demo          # 离线演示：提案 → 审批卡片 → 批准 → 执行 → 看板
-.venv/bin/python -m pytest -q     # 运行测试
+需要 **Python 3.11+**。以下命令适用于 macOS / Linux shell；后台常驻和桌面操作章节面向 macOS。
+
+```bash
+git clone https://github.com/jinronga/ecom-twin.git
+cd ecom-twin
+git checkout develop
+
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev,evidence]'
+
+# 使用模拟业务数据体验：提案 → 审批 → 执行 → 看板
+.venv/bin/ecom-twin demo
 ```
 
-## 接入真实环境
+离线演示不需要飞书、妙手或模型账号。真实任务需要配置并登录所选 Agent CLI；网页截图还需要安装 Google Chrome。
 
-优先使用本地配置页面：
+### 2. 配置连接
 
 ```bash
 .venv/bin/ecom-twin setup
 ```
 
-操作电脑（任意 Mac 软件）默认关闭：在 `settings.toml` 写 `[computer_use] enabled = true`（或在控制台的规则配置里打开），前提是本机装了 ChatGPT 桌面端、在 Codex 里启用了 Computer Use，并授予辅助功能和屏幕录制权限。`ecom-twin check` 会显示是否可用。
+打开命令生成的本地页面，填写飞书应用凭证、负责人 `open_id`、运行时、店铺白名单和审批人。页面会准备缺失的飞书 SDK 和所选 Agent CLI；工具安装不包含账号登录。
 
-从仓库直接跑时，配置、`.env`、数据库、记忆库都在仓库目录里；装好的版本放在 `~/Library/Application Support/EcomTwin/`（可用环境变量 `ECOM_TWIN_HOME` 指定），升级时只替换代码、不动数据。
+在[飞书开放平台](https://open.feishu.cn/app)完成应用配置：
 
-浏览器会打开飞书接入页，可配置 App ID / App Secret、负责人 open_id、店铺白名单、审批人、运行时和可选任务看板。密钥保存到权限为 `0600` 的 `.env`，页面和状态接口不回显。环境变量优先于文件；修改后需重启任务服务。
+1. 启用机器人，配置可用范围和消息接收、读取、发送权限。
+2. 选择“使用长连接接收事件”，订阅 `im.message.receive_v1`，发布应用版本。
+3. 需要回复截图时，开通 `im:resource:upload` 或 `im:resource` 应用身份权限。
+4. 使用同一应用下的负责人 `open_id`；多维表格看板按需配置。
 
-打开页面、保存配置或直接启动 `serve` 时，会检查并自动安装缺失的飞书 SDK、默认与备用 agent CLI。其它运行时可以在页面单独安装；已有可用版本会保留。自动下载使用官方来源：Python `lark-oapi`、npm `@anthropic-ai/claude-code` / `@openai/codex` / `opencode-ai`、Cursor 官方安装脚本。npm 工具安装在数据目录的 `data/tools/`，缺少 Node.js 时从官方站点下载 Node.js 22 并核对 SHA-256；Cursor 安装在官方默认用户目录。支持 macOS / Linux 的 arm64 / x64，安装失败可在页面重试；手动配置的错误路径需先修正或清空。
-
-安装不包含 agent 账号登录。首次使用时，在终端运行（支持自动安装目录）：
-
-```bash
-.venv/bin/ecom-twin login claude_code
-# 或 login codex / login cursor / login opencode
-```
-
-飞书应用仍需在 [飞书开放平台](https://open.feishu.cn/app) 启用机器人、配置可用范围、申请接收单聊/读消息/发送消息权限，选择「使用长连接接收事件」，订阅 `im.message.receive_v1`，并发布版本。负责人 open_id 必须来自同一应用。
-
-页面依次点击「保存并准备工具」「测试已保存的连接」「启动任务服务」，然后私聊机器人发送任务。连接测试只验证应用凭证和机器人信息，收到建单回执才代表消息接通。文本和图片私聊都可以建单；图片会下载到对应任务的私有附件目录，日志和面板只显示图片占位，不记录图片正文或资源键。引用回复汇报可以继续同一任务。
-
-每轮任务（包括续跑）都会自动读取来源会话最近 24 小时的最多 30 条消息，并补充任务原消息、引用消息和话题回复，交给模型分析对象、最新要求和已有进展，无需再说“结合上下文”。记录会去重、脱敏并限制长度；读取失败会明确标记，继续使用本地任务记录。其他会话不会自动混入。
-
-负责人私聊说“继续处理”时，若来源会话近期只有一个未完成任务，直接续接；多个候选交给模型判定，仍不明确则询问任务号，不创建重复任务。带新对象或新要求的消息仍按正常规则判断。默认底座为 Codex 时，归属判定也使用 Codex，不要求另一个账号能访问 Haiku。
-
-### Agent 浏览器与截图证据（可选）
-
-配置页勾选「启用专用 Chrome MCP」后，先运行 `.venv/bin/ecom-twin browser start`。首次在弹出的专用 Chrome 中登录业务系统；它使用 `~/.agent-chrome`，不会复用日常 Chrome。任务运行时会自动挂载 Google `chrome-devtools-mcp`，并把文件访问限制在该任务工作目录。网页截图用 MCP 的 `take_screenshot` 写入 `evidence-image prepare` 输出的路径，随后用 `evidence-image collect` 校验完整 PNG、大小和唯一目标路径。桌面窗口可以使用 `evidence-image desktop TASK WINDOW_ID --box x,y,width,height`；标注依赖带 Pillow 的 Python，标注失败会保留原图供脱敏后交付。
-
-每一轮开局只注入人工记忆的索引（名称 — 触发动作）；Agent 按这一轮要做的动作比索引，用 `read_memory` 读全文，拿不准时用 `search_memory` 兜底检索，每次都记进召回日志，并在汇报末尾写召回留痕。浏览器中的平台写操作仍然只能通过 `submit_proposal` 进入审批链。
-
-内部平台的自动登录按域名授权：在控制台「规则配置」设置「允许自动登录的内部平台完整域名」，或在 `[browser]` 中设置 `auto_login_domains = ["sxsd.topwms.com"]`。Agent 会核对 HTTPS 和完整域名，再使用负责人明确提供的该平台凭证登录；其他域名、验证码/短信/MFA仍需要负责人处理。该设置是给 Agent 的登录操作指令，不是浏览器级网络隔离；现有浏览器代理限制和业务操作审批继续生效。浏览器动作审计隐藏表单输入值和脚本正文，但 Agent 原始运行记录仍按现有机制保存在本机。
-
-配置页面仅监听 `127.0.0.1`，使用每次启动生成的访问令牌；请使用命令输出的完整链接。可用 `setup --no-browser --port 8766` 指定端口。从页面启动的任务服务会随配置服务退出而停止；需独立运行时使用 `serve`。配置 App ID / Secret 后使用官方 SDK 长连接，无需安装 lark-cli；未配置时仍兼容原 lark-cli 入口。
-
-其它命令：
+登录你在配置页选择的运行时，例如：
 
 ```bash
-cp -n .env.example .env                           # 填妙手 AppKey / AppSecret，保留已有凭证文件
-
-.venv/bin/ecom-twin init                          # 初始化本地数据库
-.venv/bin/ecom-twin health                        # 妙手只读冒烟
-.venv/bin/ecom-twin runtimes                      # 验证本机 agent CLI
-.venv/bin/ecom-twin ask "列出我的 TikTok 店铺" --console   # 本地发起任务，飞书消息只打印
-.venv/bin/ecom-twin browser start                  # 启动给 Agent 用的隔离 Chrome（可选）
-.venv/bin/ecom-twin evidence-image prepare T-0001  # 为 Chrome MCP 准备唯一截图路径
-.venv/bin/ecom-twin propose-publish items.json    # 生成上品提案并推送审批卡片
-.venv/bin/ecom-twin serve                         # 常驻：私聊建单、审批回复、thread 续跑、定时作业
-.venv/bin/ecom-twin memory drafts                 # 审核 agent 提交的记忆草稿
+.venv/bin/ecom-twin login codex
+# 选择 Claude Code 时使用：
+# .venv/bin/ecom-twin login claude_code
 ```
 
-真实环境的统一测试步骤见 [PROGRESS.md](PROGRESS.md) 第五节。
+如需妙手功能，将凭证填写到本地 `.env`：
 
-审批方式：在审批卡片下回复「批准 P-0001」或「拒绝 P-0001 原因编号 备注」。
-
-## 代码结构
-
+```bash
+cp -n .env.example .env
+# 编辑 .env，填写 MIAOSHOU_APP_KEY 和 MIAOSHOU_APP_SECRET
 ```
+
+### 3. 启动与验收
+
+```bash
+.venv/bin/ecom-twin check
+.venv/bin/ecom-twin serve
+```
+
+保持终端打开，在飞书私聊机器人发送“请说明你能协助哪些运营任务，以及需要我提供哪些信息”，先验证建单回执和 Agent 回复。已配置妙手时，再发送“列出已授权的 TikTok 店铺”验证真实业务查询。最后引用回复，检查能否续接原任务。
+
+`check` 检查配置、CLI 和基础接口连接；它不代表图片上传、Agent 工具调用和所有业务操作均已通过验收。
+
+另开终端启动控制台：
+
+```bash
+.venv/bin/ecom-twin console
+```
+
+命令会同时输出负责人和运营两种链接，打开对应的**完整链接（含 token）**。默认配置页端口为 `8765`，控制台为 `8766`；两个页面均默认监听本机。负责人链接可以修改配置，运营链接仅提供查看及记忆草稿审阅权限。
+
+## 配置指南
+
+### 配置和数据位置
+
+| 路径 | 用途 |
+| --- | --- |
+| `.env` | 飞书和妙手凭证；配置页保存时使用 `0600` 权限 |
+| `config/settings.toml` | 本机主配置，参考 [settings.example.toml](config/settings.example.toml) |
+| `config/settings.console.toml` | 控制台保存的覆盖配置，优先于主配置 |
+| `data/` | 数据库、日志、任务工作区、截图与运行记录 |
+| `memory/` | 人工维护的 Markdown 业务记忆 |
+| `skills/` | 项目自带的业务 SOP |
+
+从源码仓库运行时，数据默认放在仓库内。非源码布局下默认数据目录为 `~/Library/Application Support/EcomTwin/`；可用 `ECOM_TWIN_HOME` 覆盖，用 `ECOM_TWIN_RESOURCES` 指定资源目录。应用安装包尚未完成。
+
+修改连接或运行时配置后需要重启任务服务。
+
+### 专用浏览器
+
+公开页面取证使用本机 Chrome 的临时无头进程，不需要执行 `browser start`，目标域名需在 `[browser] allowed_domains` 中。需要交互的专用 Chrome 按下文启动；`browser.flow` 则使用独立的 Playwright 环境和平台登录状态。
+
+在配置页开启专用 Chrome，或者合并以下设置到已有的 `[browser]` 配置节：
+
+```toml
+[browser]
+enabled = true
+browser_url = "http://127.0.0.1:9225"
+user_data_dir = "~/.agent-chrome-ecom"
+interactive = true
+auto_login_domains = []
+```
+
+```bash
+.venv/bin/ecom-twin browser start
+```
+
+调试端口应保持空闲，资料目录使用专用目录。启动后运行 `check` 确认连接到专用 Chrome；不要在该浏览器登录卖家中心或广告后台。
+
+启用 `[browser] enabled = true` 后，调度器会在每轮任务（含续跑）开始前准备专用 Chrome：未运行时自动启动，已运行时复用，确认用户目录和调试接口正常后再挂载工具。无需给 Agent 开放终端权限。端口被其他进程占用、用户目录不匹配或启动失败时，会报告具体原因，不会自动切换端口或接管日常浏览器。
+
+内部平台自动登录由负责人按**完整域名**授权，例如 `auto_login_domains = ["wms.example.com"]`。Agent 可以使用明确提供给该平台的凭证登录；该配置不包含子域名或第三方登录页。验证码、短信、MFA 和未授权平台仍交给负责人处理。
+
+域名登录规则通过任务指令传达给 Agent，并非浏览器级网络隔离。登录许可也不等于制单、删除、改价等业务操作许可。
+
+需要走 `browser.flow` 的内部平台流程时，另行配置 `[platforms.<key>]`，安装 Playwright，并保存该平台的登录状态：
+
+```bash
+.venv/bin/python -m pip install playwright
+.venv/bin/python -m playwright install chromium
+.venv/bin/ecom-twin browser-login warehouse
+# warehouse 对应自己配置的 [platforms.warehouse]
+```
+
+### 上下文与任务续接
+
+每轮自动读取任务来源会话，优先分析最新要求、引用关系和已有进展。失败或截断会标明；需要更早的信息时可继续调用飞书上下文工具。
+
+其他会话需加入 `[feishu] readable_chats` 才能按需读取；以个人身份搜索聊天记录默认关闭。群聊还需配置 `[intake] listen_chats`，群内回复和通知由 `send_permissions` 单独控制。
+
+默认运行时为 Codex 时，任务归属判断也使用 Codex。负责人私聊的明确续接有规则兜底；仍不能确定目标时，先询问任务号，避免创建重复任务。
+
+## 操作边界
+
+| 操作 | 当前处理方式 |
+| --- | --- |
+| 查询、分析、定价计算、公开页面取证 | 在工具和数据访问范围内直接执行 |
+| 妙手采集箱暂存区采集、编辑、认领 | 可以直接写入；执行合规、店铺范围等校验，记录修改前后内容 |
+| 发布等已实现的提案执行动作 | 负责人审批后由执行器校验并执行 |
+| 内部平台网页操作 | 通过专用浏览器代理；提交单据、删除等动作要求 Agent 停在最后一步取得授权 |
+| 内部平台自动登录 | 仅限负责人配置的域名和明确提供的凭证 |
+| 记忆修改 | Agent 提交草稿，由人审阅采纳 |
+
+代码强制校验与提示词约束承担不同职责：提案执行器检查店铺、限额、有效期等规则；浏览器代理过滤工具、网址和脚本并留痕，但不能准确识别所有按钮的业务后果。
+
+Codex 使用隔离配置目录，禁用内置 Shell 和全局应用连接器，只开放本轮工具白名单。浏览器动作审计隐藏填写值及脚本正文；原始 Agent 运行记录仍保存在本机，可能包含任务输入和工具参数，不应公开上传。
+
+## 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `ecom-twin setup` | 配置飞书与运行时 |
+| `ecom-twin check` | 基础连接和配置检查 |
+| `ecom-twin runtimes` | 检查各 Agent CLI |
+| `ecom-twin serve` | 前台任务服务 |
+| `ecom-twin console` | 本地管理控制台 |
+| `ecom-twin health` | 妙手只读连接检查 |
+| `ecom-twin memory drafts` | 查看记忆草稿 |
+| `ecom-twin memory recalls` | 查看召回记录 |
+| `ecom-twin costs` | 查看成本统计 |
+| `ecom-twin shadow report` | 查看影子模式评估 |
+
+未激活虚拟环境时，为命令加上 `.venv/bin/`。更多选项可通过 `.venv/bin/ecom-twin --help` 查看。
+
+本地发起任务、将飞书输出改为终端打印：
+
+```bash
+.venv/bin/ecom-twin ask "列出我的 TikTok 店铺" --console
+```
+
+`--console` 只改变消息投递方式，仍会调用真实 Agent 和业务工具，不是业务操作的 dry-run。
+
+审批卡片下使用文本回复：
+
+```text
+批准 P-0001
+拒绝 P-0001 1 成本数据不对
+```
+
+将 `P-0001` 替换为审批卡片中的提案号。拒绝格式为 `拒绝 提案号 原因编号 备注`；原因必填，编号为 `1` 数据不对、`2` 判断不对、`3` 时机不对、`4` 违反偏好、`5` 其他，也可直接填写对应的原因文字。示例中的 `1` 表示“数据不对”，备注可省略。
+
+## 后台运行（macOS）
+
+确认前台任务正常后，先停止前台 `serve`，再安装并启动 launchd 服务：
+
+```bash
+.venv/bin/ecom-twin start       # 登录后自启，异常退出后自动拉起
+.venv/bin/ecom-twin status
+.venv/bin/ecom-twin logs -n 100
+.venv/bin/ecom-twin restart
+.venv/bin/ecom-twin stop        # 停止本次运行，下次登录仍可能自启
+.venv/bin/ecom-twin uninstall   # 移除常驻配置，保留个人数据
+```
+
+后台服务只运行任务监听与调度；控制台仍需单独启动。从 `setup` 页面启动的任务服务随配置服务退出而停止，独立运行应使用 `serve` 或 launchd。
+
+## 当前状态
+
+| 范围 | 验证情况与限制 |
+| --- | --- |
+| 飞书与 Codex 基础链路 | 已验证消息读取、工具调用、会话续跑和图片发送；不同应用仍需自行开通权限 |
+| 自动上下文与任务归属 | 有回归测试及真实模型判定验证；多任务、长对话仍需结合具体业务观察 |
+| Listing 暂存与发布 | 已有工具、校验及离线测试；真实写入和端到端上架需按店铺验收 |
+| 仓库与内部平台 | 提供浏览器操作基础能力；具体平台登录、制单和结果回读需逐项验证 |
+| 日报与异常检测 | 支持 ERP 导出表格导入和指标计算；不是所有平台的实时数据集成 |
+| 部署与其他运行时 | 支持源码运行和 macOS launchd；`.app` / DMG 尚未完成，其他运行时需真实环境验证 |
+
+详细设计见 [DESIGN.md](DESIGN.md)，阶段记录见 [PROGRESS.md](PROGRESS.md)。进度文档保留历史状态，遇到旧结论时应结合后续记录和当前代码核对。
+
+## 项目结构
+
+```text
 src/ecom_twin/
-  config.py        配置（settings.toml + .env）
-  models.py        任务、步骤、提案
-  store.py         本地状态库（SQLite），任务状态以此为准
-  numbers.py       数字由代码算：定价、理由数字校验
-  actions.py       写操作类型（目前：经妙手发布到 TikTok）
-  proposals.py     提案服务：证据和后果由代码计算
-  approval.py      审批卡片、审批回复、过期提醒
-  executor.py      执行器：唯一能调写接口的组件
-  tasks.py         任务、步骤、心跳
-  board.py         飞书多维表格看板回写（合并、节流、退避）
-  feishu.py        飞书访问层（原生 / lark-cli；console 调试模式）
-  feishu_native.py 飞书应用认证、消息与看板 API、官方 SDK 长连接事件转换
-  setup_web.py     本地配置页面 API、工具安装任务、任务服务启停
-  setup_config.py  配置合并保存、密钥文件与脱敏读取
-  tooling.py       固定官方来源的工具检测与自动安装
-  web/setup.html   飞书接入配置页面（桌面 / 手机）
-  followups.py     执行后跟进：回读确认、第 3/7 天复盘
-  memory.py        记忆库、召回、记忆草稿、拒绝原因汇总
-  dispatcher.py    私聊建单、调 agent、重试与切换底座、汇报回 thread
-  mcp_server.py    给 agent 用的工具（只读、提案、步骤、记忆、提问）
-  scheduler.py     定时作业与健康检查
-  prompts/         agent 系统提示词
-  adapters/        ERP / 平台适配器（目前：妙手）
-  runtime/         agent 运行时适配（Claude Code、Codex、Cursor Agent、OpenCode）与 CLI 验证
-  app.py           组装
-  cli.py           命令行
-memory/            人工精炼的记忆（Markdown）
+├── intake.py             消息过滤、任务合并与归属判断
+├── chat_context.py       每轮自动加载聊天上下文
+├── dispatcher.py         调度、续跑、重试和证据交付
+├── runtime/              Agent CLI 适配器
+├── mcp_server.py         业务工具入口
+├── adapters/             妙手等平台适配器
+├── staging.py            采集箱暂存区工作流
+├── approval.py           提案审批
+├── executor.py           审批后的业务执行
+├── memory.py             业务记忆与草稿
+├── feishu_native.py      飞书 API 与长连接
+├── browser.py            公开页面取证
+├── chrome_guard.py       专用浏览器代理
+├── console.py            管理控制台
+└── service.py            launchd 服务管理
+config/                   配置示例与合规规则
+skills/                   业务 SOP
+memory/                   记忆模板
+tests/                    自动化测试
 ```
+
+## 开发与验证
+
+```bash
+.venv/bin/python -m pytest -q
+git diff --check
+```
+
+测试覆盖任务路由、上下文、审批、记忆、工具权限、飞书错误处理、截图交付和服务管理。含 Chrome 的本地取证测试；没有 Chrome 时相关测试会跳过。测试通过不替代真实平台验收。
+
+新增业务能力时，先定义工具输入与数据来源，再实现权限校验、失败反馈和回归测试。修改任务行为时，同时检查“新建任务”“引用回复”“旧会话续跑”三条路径。
+
+`.env`、本机配置和 `data/` 不进入版本库。`memory/` 中存在受 Git 跟踪的模板，填入真实业务经验后应检查提交差异；`settings.console.toml` 也需确保只保留在本机。提交问题反馈时附脱敏后的错误码、运行时版本和复现步骤，不上传凭证、原始聊天记录或浏览器登录资料。

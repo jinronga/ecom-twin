@@ -38,7 +38,7 @@ def test_whoami_and_reviewer_can_read_everything(server):
     call, _ = server
     assert call("GET", "/api/whoami", "owner-tok") == (200, {"role": ROLE_OWNER})
     assert call("GET", "/api/whoami", "ops-tok") == (200, {"role": ROLE_REVIEWER})
-    for path in ("/api/memories", "/api/drafts", "/api/recalls", "/api/intake", "/api/listings", "/api/memory-bundle"):
+    for path in ("/api/memories", "/api/drafts", "/api/recalls", "/api/intake", "/api/listings", "/api/memory-bundle", "/api/tasks"):
         assert call("GET", path, "ops-tok")[0] == 200, path
 
 

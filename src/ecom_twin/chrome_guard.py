@@ -20,6 +20,9 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -48,6 +51,49 @@ def upstream_command(browser: Any, workdir: Path) -> list[str]:
 
 
 DEFAULT_PROFILE = Path.home() / ".agent-chrome"  # 和 evidence.start_chrome 的默认用户目录一致
+_START_LOCK = threading.Lock()
+
+
+def _debug_ready(browser: Any) -> bool:
+    """A listening process alone does not mean the DevTools endpoint is ready."""
+    try:
+        with urllib.request.urlopen(browser.browser_url.rstrip('/') + '/json/version', timeout=2) as response:
+            data = json.load(response)
+        return isinstance(data, dict) and bool(data.get('webSocketDebuggerUrl'))
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_dedicated(browser: Any, *, check=None, launch=None, ready=None,
+                     sleep=time.sleep, attempts: int = 20) -> str | None:
+    """Prepare the configured browser before exposing tools; never switch ports/profiles."""
+    from .evidence import start_chrome
+    if not browser.enabled:
+        return "专用浏览器未启用，请负责人在规则配置中开启"
+    check, launch, ready = check or verify_dedicated, launch or start_chrome, ready or _debug_ready
+    port = urlsplit(browser.browser_url).port or 80
+    with _START_LOCK:
+        reason = check(browser)
+        if reason:
+            # Only an absent listener may be repaired automatically. An unknown/wrong
+            # process or failed inspection must never be mistaken for an idle port.
+            if not reason.startswith(f"端口 {port} 上没有 Chrome，"):
+                return reason
+            try:
+                actual = launch(browser.chrome_path, browser.user_data_dir, port, strict_port=True)
+            except (OSError, ValueError, RuntimeError) as error:
+                return f"专用浏览器自动启动失败：{error}"
+            if actual != port:
+                return f"专用浏览器启动端口不匹配：需要 {port}，实际 {actual}"
+        for attempt in range(attempts):
+            reason = check(browser)
+            if reason is None and ready(browser):
+                return None
+            if reason and not reason.startswith(f"端口 {port} 上没有 Chrome，"):
+                return reason
+            if attempt + 1 < attempts:
+                sleep(.25)
+        return f"专用浏览器尚未就绪：{reason or '调试接口未响应'}，请检查 Chrome 启动状态后重试"
 
 
 def _flag(args: str, name: str) -> str:

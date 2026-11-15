@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from .computer_use import (ALLOWED_TOOLS as COMPUTER_TOOLS, SERVER_NAME as COMPUTER_SERVER, applescript_section,
                            find_cua, prompt_section)
-from .chrome_guard import INTERACTIVE_TOOLS, READONLY_TOOLS, upstream_command, verify_dedicated
+from .chrome_guard import INTERACTIVE_TOOLS, READONLY_TOOLS, upstream_command, ensure_dedicated
 from .mcp_server import SERVER_NAME, tool_names
 from . import evidence
 from .memory import MemoryStore
@@ -112,7 +112,7 @@ class Dispatcher:
         self.config_path = config_path
         self.pool = pool  # None 时同步执行（测试用）
         self.heartbeat_sec = heartbeat_sec
-        self.chrome_check = verify_dedicated  # 挂浏览器前确认端口上是专用 Chrome，不是负责人的日常 Chrome
+        self.chrome_check = ensure_dedicated  # 自动准备并核验专用 Chrome，再挂载工具
         self.sleep = sleep
         self._task_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
@@ -279,8 +279,11 @@ class Dispatcher:
     def _browser_mode(self, unavailable: str | None) -> str:
         if unavailable:
             return (f"- 专用浏览器这一轮不可用：{unavailable}。需要浏览器的步骤不要另找办法打开网页，"
-                    "在汇报里写明卡点，请负责人运行 ecom-twin browser start 后再派。\n")
+                    "调度器已检查或尝试自动启动；报告具体失败原因，不要要求接入通用终端工具，"
+                    "不要把环境故障当作缺少授权反复询问。\n")
         browser = getattr(self.app.settings, "browser", None)
+        if not browser or not browser.enabled:
+            return "- 专用浏览器未启用，本轮没有 Chrome 操作工具；需要时请负责人在规则配置中开启。\n"
         name = "browser_interactive.md" if browser and browser.interactive else "browser_readonly.md"
         text = (PROMPT_FILE.parent / name).read_text(encoding="utf-8")
         domains = browser.auto_login_domains if browser and browser.enabled and browser.interactive else []
@@ -308,6 +311,8 @@ class Dispatcher:
         unavailable = self.chrome_check(browser) if browser and browser.enabled else None
         if unavailable:
             self.app.store.audit("task", task_id, "browser_unavailable", "system", {"reason": unavailable})
+        elif browser and browser.enabled:
+            self.app.store.audit("task", task_id, "browser_ready", "system", {"url": browser.browser_url})
         sections = ([prompt_section(cu)] if computer else []) + \
             ([applescript_section(cu)] if cu.applescript else [])
         system = PROMPT_FILE.read_text(encoding="utf-8").format(task_id=task_id,
@@ -339,8 +344,17 @@ class Dispatcher:
         if computer:
             mcp_servers[COMPUTER_SERVER] = computer
             allowed_tools += [f"mcp__{COMPUTER_SERVER}__{name}" for name in COMPUTER_TOOLS]
+        # Resumed sessions may remember an earlier run with no browser tools. Refresh
+        # capability information in the current input as well as the system file.
+        browser_state = ("专用 Chrome 已由调度器启动或复用并通过检查，chrome-devtools 工具已挂载。"
+                         "直接使用本轮浏览器工具，不需要终端，不要重复要求负责人启动浏览器。"
+                         "旧轮次的浏览器卡点仅为历史记录；先检查当前页面再继续。"
+                         if browser and browser.enabled and not unavailable else
+                         f"专用 Chrome 不可用：{unavailable or '未启用'}。不要声称已经完成浏览器操作。")
         return RunSpec(
-            prompt=context + prompt, system_prompt=system, workdir=self.workroot / task_id,
+            prompt=("【本轮浏览器接入状态】\n" + browser_state + "\n\n"
+                    if browser and browser.enabled else "") + context + prompt,
+            system_prompt=system, workdir=self.workroot / task_id,
             mcp_servers=mcp_servers,
             allowed_tools=allowed_tools,
             shell_commands=list(cu.shell_commands) if cu.applescript else [],

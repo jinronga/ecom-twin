@@ -8,6 +8,7 @@ import pytest
 
 from ecom_twin.console import make_server
 from ecom_twin.memory import MemoryStore, render_memory
+from ecom_twin.models import Step, StepStatus, Task, TaskSource, TaskStatus
 from ecom_twin.store import Store
 
 
@@ -97,3 +98,27 @@ def test_recalls_listed_newest_first(console):
     recalls = console.call("GET", "/api/recalls")[1]["recalls"]
     assert [r["task_id"] for r in recalls] == ["T-0002", "T-0001"]
     assert len(console.call("GET", "/api/recalls?task=T-0001")[1]["recalls"]) == 1
+
+
+def test_task_board_and_detail_use_real_status_without_runtime_secrets(console):
+    assert console.call("GET", "/api/tasks")[1] == {"tasks": []}
+    for index, state in enumerate(TaskStatus):
+        console.store.save_task(Task(
+            id=f"T-{index:04}", title=f"商品任务 {index}", source=TaskSource.SELF_DM,
+            scene="listing", status=state, runtime="codex", session_id="private-session",
+            origin_chat_id="private-chat", transcript="/private/runtime.jsonl",
+        ))
+    status, data = console.call("GET", "/api/tasks")
+    assert status == 200
+    assert {t["status"] for t in data["tasks"]} == {s.value for s in TaskStatus}
+    assert not {"session_id", "origin_chat_id", "transcript", "owner"} & data["tasks"][0].keys()
+    console.store.add_step(Step(None, "T-0000", "检查商品", StepStatus.SUCCESS,
+                                summary="已检查标题和 SKU", evidence="/private/shot.png"))
+    status, detail = console.call("GET", "/api/tasks/T-0000")
+    assert status == 200 and detail["task"]["title"] == "商品任务 0"
+    assert detail["steps"][0]["summary"] == "已检查标题和 SKU"
+    assert "evidence" not in detail["steps"][0]
+    assert console.call("GET", "/api/tasks/T-404")[0] == 404
+    assert console.call("GET", "/api/tasks", token="wrong")[0] == 401
+    assert console.call("POST", "/api/tasks/T-0000", {"status": "已关闭"})[0] == 404
+    assert console.store.get_task("T-0000").status == TaskStatus.PENDING

@@ -344,3 +344,19 @@ def test_messages_queued_before_start_are_merged_not_overwritten(env, tmp_path):
     env.app.store.set_queue_paused(False)
     d.start_queue_worker()
     assert len(calls) == 1 and "第一条" in calls[0][2] and "第二条" in calls[0][2]
+
+
+def test_resumed_task_gets_current_browser_capability_after_recovery(env, tmp_path):
+    env.app.settings.browser.enabled = True
+    d, _ = dispatcher(env, tmp_path, {})
+    d.chrome_check = lambda browser: '专用浏览器尚未就绪'
+    first = d._spec(env.task.id, '继续查询订单')
+    assert 'chrome-devtools' not in first.mcp_servers
+    assert '专用 Chrome 不可用' in first.prompt
+    d.chrome_check = lambda browser: None
+    recovered = d._spec(env.task.id, '继续查询订单')
+    assert 'chrome-devtools' in recovered.mcp_servers
+    assert '不需要终端' in recovered.prompt
+    assert '旧轮次的浏览器卡点仅为历史记录' in recovered.prompt
+    assert 'browser_ready' in env.app.store.audit_events(env.task.id)
+    assert recovered.prompt.endswith('继续查询订单')
