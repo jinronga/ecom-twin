@@ -81,7 +81,7 @@ MCP 工具 ── 业务查询 · 记忆 · SOP · 浏览器 · 提案
 ```bash
 git clone https://github.com/jinronga/ecom-twin.git
 cd ecom-twin
-git checkout develop
+git checkout main
 
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev,evidence]'

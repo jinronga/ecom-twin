@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
+from . import __version__
 from .adapters.base import AdapterError
 from .browser import BrowserError, capture_page
 from . import desktop
@@ -480,7 +481,7 @@ class ToolServer:
             return None
         if method == "initialize":
             result = {"protocolVersion": msg.get("params", {}).get("protocolVersion", PROTOCOL_VERSION),
-                      "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": "0.1.0"}}
+                      "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": __version__}}
         elif method == "ping":
             result = {}
         elif method == "tools/list":
