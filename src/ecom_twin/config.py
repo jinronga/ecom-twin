@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .cs import CsSettings
 from .paths import DATA_HOME, ENV_FILE, MEMORY_DIR, SETTINGS_FILE, SKILLS_DIR
 
 
@@ -207,6 +208,27 @@ class SendPermission:
 
 
 @dataclass
+class OutboundSettings:
+    """对外说话的用词和长短（对照数字分身 0.3.1 的人设：禁用词、啰嗦检查）。
+
+    agent 主动发进群的消息（notify_chat）发送前检查，不合规拒收、报错写清怎么改；
+    发给负责人的汇报只把禁用词写进提示词，不卡长度（汇报本来就是结构化的长文）。"""
+    # 一行一组：前面是空格隔开的词，=> 后面是拦下时告诉 agent 换成什么
+    banned_words: list[str] = field(default_factory=lambda: [
+        "闸门 => 说清楚它拦的是什么，比如「上架闸门」说成「毛利低于 25% 的不让上架」",
+        "兜住 兜不住 没兜住 兜底 => 说实际发生了什么，比如「库存没兜住」说成「库存同步晚了，超卖了 3 单」",
+        "接住 接不住 => 说处理得了还是处理不了，或者实际发生了什么",
+        "收口 => 说最后一步是什么",
+        "抹平 => 说统一成了什么样，或者怎么处理掉的",
+        "焊死 钉死 => 说写死在哪里",
+        "抓手 赋能 拉通 打通 颗粒度 闭环 => 说具体做了什么、改了哪里",
+    ])
+    wordy_check: bool = True
+    max_clauses: int = 8   # 一段话最多几个分句（逗号、句号、问号、换行分开）
+    clause_max: int = 40   # 每个分句最多几个字
+
+
+@dataclass
 class ReportSettings:
     send_hour: int = 9               # 本地时间几点发日报
     timezone: str = "Asia/Shanghai"
@@ -243,6 +265,8 @@ class Settings:
     # 影子模式：这些操作类型的提案只记录、不推送审批，用来和人工实际操作比对吻合率（DESIGN.md 15.1）
     shadow_actions: list[str] = field(default_factory=list)
     daily_report: ReportSettings = field(default_factory=ReportSettings)
+    outbound: OutboundSettings = field(default_factory=OutboundSettings)
+    customer_service: CsSettings = field(default_factory=CsSettings)
     send_permissions: dict[str, SendPermission] = field(default_factory=dict)
     # 场景 SOP（skill）所在目录，agent 按场景动态加载（DESIGN.md「Skill 动态载入」）
     # 项目自带的 skills/ 总是第一个（同名时优先），再加配置的目录
@@ -293,6 +317,8 @@ def settings_from_raw(raw: dict) -> Settings:
         intake=IntakeSettings(**raw.get("intake", {})),
         shop_timezones=dict(raw.get("shop_timezones", {})),
         send_permissions={k: SendPermission(**v) for k, v in raw.get("send_permissions", {}).items()},
+        outbound=OutboundSettings(**raw.get("outbound", {})),
+        customer_service=CsSettings(**raw.get("customer_service", {})),
         shadow_actions=list(raw.get("shadow", {}).get("actions", [])),
         daily_report=ReportSettings(**{**raw.get("daily_report", {}),
                                        **({"columns": {**ReportSettings().columns,

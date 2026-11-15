@@ -276,6 +276,13 @@ class Dispatcher:
             args += ["--config", self.config_path]
         return {"command": sys.executable, "args": args}
 
+    def _banned_words(self) -> str:
+        """[outbound] 禁用词渲染成提示词里的清单：「- 兜住、没兜住：说实际发生了什么」。"""
+        from .outbound import parse_banned_words
+        outbound = getattr(self.app.settings, "outbound", None)
+        rules = parse_banned_words(outbound.banned_words) if outbound else []
+        return "\n".join(f"- {'、'.join(words)}：{hint}" for words, hint in rules) or "（没有配置）"
+
     def _browser_mode(self, unavailable: str | None) -> str:
         if unavailable:
             return (f"- 专用浏览器这一轮不可用：{unavailable}。需要浏览器的步骤不要另找办法打开网页，"
@@ -321,7 +328,8 @@ class Dispatcher:
                                                                 sop_index=SopLibrary(self.app.settings.skill_dirs).index_text(),
                                                                 memory_index=self.memory.index_text(),
                                                                 evidence_dir=str(evidence_dir),
-                                                                browser_mode=self._browser_mode(unavailable))
+                                                                browser_mode=self._browser_mode(unavailable),
+                                                                banned_words=self._banned_words())
         args = ["-m", "ecom_twin.mcp_server", "--task", task_id]
         if self.config_path:
             args += ["--config", self.config_path]

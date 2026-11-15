@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS seen_events (
     event_id TEXT PRIMARY KEY,
     created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS cs_drafts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT, shop_key TEXT, platform TEXT, language TEXT,
+    buyer_message TEXT, draft TEXT, translation_zh TEXT,
+    risk_level INTEGER, risk_reasons TEXT, status TEXT NOT NULL,
+    final_text TEXT, note TEXT, created_at TEXT, decided_at TEXT
+);
 CREATE TABLE IF NOT EXISTS counters (
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL
@@ -341,6 +348,57 @@ class Store:
         ref.close()
 
     # ---- id ----
+    # ---- 客服草稿（DESIGN.md 8.7，客服-0） ----
+    CS_STATUSES = ("待发送", "已发送", "改后发送", "不发")
+
+    def add_cs_draft(self, task_id: str, shop_key: str, platform: str, language: str, buyer_message: str,
+                     draft: str, translation_zh: str, risk_level: int, risk_reasons: list[str]) -> str:
+        draft_id = self.next_id("CS")
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO cs_drafts(id, task_id, shop_key, platform, language, buyer_message, draft, translation_zh,
+                risk_level, risk_reasons, status, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (draft_id, task_id, shop_key, platform, language, buyer_message, draft, translation_zh,
+                 risk_level, _j(risk_reasons), "待发送", _ts(utcnow())))
+        return draft_id
+
+    def get_cs_draft(self, draft_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM cs_drafts WHERE id=?", (draft_id,)).fetchone()
+        return {**dict(row), "risk_reasons": json.loads(row["risk_reasons"] or "[]")} if row else None
+
+    def list_cs_drafts(self, status: str | None = None, limit: int = 200) -> list[dict]:
+        sql, args = "SELECT * FROM cs_drafts", []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        rows = self.conn.execute(sql + " ORDER BY created_at DESC, id DESC LIMIT ?", (*args, limit)).fetchall()
+        return [{**dict(r), "risk_reasons": json.loads(r["risk_reasons"] or "[]")} for r in rows]
+
+    def decide_cs_draft(self, draft_id: str, status: str, final_text: str = "", note: str = "") -> None:
+        if status not in self.CS_STATUSES[1:]:
+            raise ValueError(f"状态只能是 {' / '.join(self.CS_STATUSES[1:])}")
+        if status == "改后发送" and not final_text.strip():
+            raise ValueError("改后发送要附上实际发出去的文字（用来算改动率、改进话术）")
+        with self.conn:
+            cur = self.conn.execute("UPDATE cs_drafts SET status=?, final_text=?, note=?, decided_at=? WHERE id=?",
+                                    (status, final_text or None, note, _ts(utcnow()), draft_id))
+        if cur.rowcount == 0:
+            raise ValueError(f"客服草稿 {draft_id} 不存在")
+
+    def cs_stats(self) -> dict[str, Any]:
+        """草稿好不好用：发出的里有多少被改过（改动率）、多少不发。按风险等级也分一下。"""
+        rows = self.conn.execute("SELECT status, risk_level, COUNT(*) AS n FROM cs_drafts GROUP BY status, risk_level")
+        counts: dict[str, int] = {}
+        by_level: dict[int, int] = {}
+        for r in rows.fetchall():
+            counts[r["status"]] = counts.get(r["status"], 0) + r["n"]
+            by_level[r["risk_level"]] = by_level.get(r["risk_level"], 0) + r["n"]
+        sent = counts.get("已发送", 0) + counts.get("改后发送", 0)
+        decided = sent + counts.get("不发", 0)
+        return {"counts": counts, "by_level": by_level,
+                "edit_rate": round(counts.get("改后发送", 0) / sent, 3) if sent else None,
+                "drop_rate": round(counts.get("不发", 0) / decided, 3) if decided else None}
+
     def next_id(self, prefix: str) -> str:
         with self.conn:
             self.conn.execute(

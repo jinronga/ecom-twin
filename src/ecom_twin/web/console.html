@@ -40,6 +40,8 @@ dialog{color:var(--text);background:var(--column-bg);border:1px solid var(--dial
 @media(max-width:1100px){:root{--sidebar:200px}main{padding:20px}.layout{grid-template-columns:250px minmax(0,1fr)}.crumb{display:none}.topbar{padding:0 20px}}
 @media(max-width:760px){:root{--rail:56px;--sidebar:220px}.sidebar{transform:translateX(-110%);transition:transform .2s}.nav-open .sidebar{transform:none;box-shadow:15px 0 45px #0008}.app-shell{margin-left:var(--rail)}.rail{width:var(--rail);padding:16px 4px}.rail-btn{width:42px}.brand{width:34px;height:34px}.mobile-menu{display:inline-flex}.topbar{height:60px;padding:0 15px}.topbar h1{font-size:14px}.top-actions .btn{font-size:11px;padding:6px 8px}main{padding:20px 15px}.page-intro{align-items:start}.page-intro h2{font-size:23px}.sync-note{display:none}.toolbar{gap:8px}.toolbar .spacer{display:none}.search-box{flex-basis:100%;max-width:none}.board{grid-template-columns:repeat(5,260px);gap:12px}.layout{grid-template-columns:1fr}.list{max-height:340px}.card{padding:14px}.detail-grid{grid-template-columns:1fr}.dialog-body{padding:20px}.crumb{display:none}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+#csProfiles textarea,#csDrafts textarea{min-height:0;height:auto}
+body.readonly #cspForm .row button{display:none!important}
 </style>
 </head>
 <body>
@@ -61,6 +63,9 @@ dialog{color:var(--text);background:var(--column-bg);border:1px solid var(--dial
     <button data-tab="tasks" data-filter="active"><span data-icon="bot"></span>智能体在做<span class="count" id="activeTasks">—</span></button>
     <button data-tab="tasks" data-filter="attention"><span data-icon="inbox"></span>需要我处理<span class="count" id="attentionTasks">—</span></button>
     <button data-tab="listings"><span data-icon="box"></span>Listing 对比</button>
+    <div class="nav-label">客户服务</div>
+    <button data-tab="csDrafts"><span data-icon="inbox"></span>客服草稿</button>
+    <button data-tab="csProfiles"><span data-icon="edit"></span>客服话术</button>
     <div class="nav-label">知识与经验</div>
     <button data-tab="memories"><span data-icon="book"></span>记忆库</button>
     <button data-tab="drafts"><span data-icon="edit"></span>记忆草稿<span id="draftCount" class="badge" hidden></span></button>
@@ -82,7 +87,7 @@ dialog{color:var(--text);background:var(--column-bg);border:1px solid var(--dial
   <div class="top-actions"><button class="icon-btn" id="refreshPage" title="刷新当前页面" aria-label="刷新当前页面"><span data-icon="refresh"></span></button><button class="btn" id="taskHelp"><span data-icon="plus"></span>交办任务</button></div>
 </header>
 <main>
-  <div id="roleBanner" class="role-banner" hidden>当前是运营账号：所有页面都能看，记忆草稿能采纳或驳回；改规则配置、记忆库、导入、回滚要用负责人的链接。</div>
+  <div id="roleBanner" class="role-banner" hidden>当前是运营账号：所有页面都能看，记忆草稿能采纳或驳回、客服草稿能记录发送结果、客服话术能预览；改规则配置、记忆库、导入、回滚要用负责人的链接。</div>
   <section id="tasks" aria-label="任务工作区">
     <div class="page-intro"><div><div class="eyebrow">WORKSPACE / TASKS</div><h2 id="boardTitle">让每一件事，有所进展。</h2><p id="boardSubtitle">从飞书交办，到结果交付。在这里跟进每一步。</p></div><span class="sync-note" id="syncStatus">正在读取任务…</span></div>
     <div class="toolbar"><label class="search-box" style="margin:0;font-weight:400"><span data-icon="search"></span><input type="search" id="taskSearch" placeholder="搜索任务、店铺或任务号…" aria-label="搜索任务"></label><span class="spacer"></span><select id="taskStatus" aria-label="筛选任务状态"><option value="">所有状态</option></select><div class="view-switch" aria-label="任务视图"><button id="boardMode" class="active" aria-pressed="true"><span data-icon="board"></span>看板</button><button id="listMode" aria-pressed="false"><span data-icon="list"></span>列表</button></div></div>
@@ -204,6 +209,62 @@ dialog{color:var(--text);background:var(--column-bg);border:1px solid var(--dial
       <button class="btn" id="listingFilter">筛选</button>
     </div>
     <div id="listingList"></div>
+  </section>
+
+  <section id="csDrafts" hidden>
+    <p class="hint">分身起草的买家回复（客服-0：平台没接接口，复制到平台后台发送）。发完在这里记一下结果，
+      改动率高说明话术设置或售后政策缺了东西。三级（退款、补发、补偿等）的方案和金额由负责人定，回复里不写金额。</p>
+    <div class="row" style="margin:0 0 16px;gap:8px">
+      <select id="csStatus" aria-label="发送状态" style="width:auto">
+        <option value="">全部</option><option>待发送</option><option>已发送</option><option>改后发送</option><option>不发</option>
+      </select>
+      <span class="meta" id="csStats"></span>
+    </div>
+    <div id="csList"></div>
+  </section>
+
+  <section id="csProfiles" hidden>
+    <p class="hint">给分身起草买家回复时用的话术，按「店铺/语言」一套一套设：口吻样例照着学，补充禁用说法和字数上限会在提交前检查。
+      <span id="cspOrder"></span> 店铺的售后政策（退换条件、时效、补偿标准）放记忆库，这里的备注只写一两句提示。</p>
+    <div class="layout">
+      <div class="card list">
+        <button class="btn owner-only" id="cspNew" style="width:100%;margin-bottom:8px">+ 新建一套</button>
+        <div id="cspList"></div>
+        <details style="margin-top:12px">
+          <summary class="meta">通用设置（所有店铺都生效，在「规则配置」里改）</summary>
+          <pre id="cspDefaults" style="white-space:pre-wrap;margin-top:8px"></pre>
+        </details>
+      </div>
+      <div class="card">
+        <form id="cspForm">
+          <label for="cspKey">名称 <small>平台:店铺ID/语言，例如 tiktok:7300/en；也可以是 tiktok:7300、*/ar、default</small></label>
+          <input id="cspKey" required placeholder="tiktok:7300/en">
+          <label for="cspVoice">口吻样例 <small>一行一句，最多 12 句；留空用默认样例</small></label>
+          <textarea id="cspVoice" rows="5"></textarea>
+          <label for="cspBanned">补充禁用说法 <small>一行一组：说法, 说法 => 为什么不行；在通用禁用说法之外再加</small></label>
+          <textarea id="cspBanned" rows="3"></textarea>
+          <label for="cspMax">字数上限 <small>留空用通用设置</small></label>
+          <input id="cspMax" type="number" min="50" max="2000">
+          <label for="cspNotes">备注 <small>一两句提示，例如「美区，语气随意；30 天内可退换」</small></label>
+          <input id="cspNotes" maxlength="500">
+          <div class="row">
+            <span class="meta" id="cspInfo"></span><span class="spacer"></span>
+            <button type="button" class="btn danger owner-only" id="cspDelete">删除（恢复默认）</button>
+            <button type="submit" class="btn primary owner-only">保存</button>
+          </div>
+        </form>
+        <h3 style="margin-top:20px">预览</h3>
+        <p class="meta">输入一条买家消息和一段回复，看会用哪套话术、过不过检查、判几级。只算不存。</p>
+        <div class="row" style="gap:8px;margin:0">
+          <input id="cspPShop" placeholder="店铺，例如 tiktok:7300" style="flex:1">
+          <input id="cspPLang" placeholder="语言，例如 en" style="width:120px">
+        </div>
+        <textarea id="cspPBuyer" rows="2" placeholder="买家消息" style="margin-top:8px"></textarea>
+        <textarea id="cspPDraft" rows="3" placeholder="回复草稿" style="margin-top:8px"></textarea>
+        <div class="row"><span class="spacer"></span><button type="button" class="btn" id="cspPreview">检查</button></div>
+        <div id="cspResult"></div>
+      </div>
+    </div>
   </section>
 
   <section id="costs" hidden>
@@ -556,6 +617,97 @@ async function loadListings() {
 }
 $("listingFilter").onclick = loadListings;
 
+// ---- 客服草稿 ----
+const CS_LEVEL = { 1: "一级 只读答复", 2: "二级 对外承诺", 3: "三级 花钱或改订单" };
+async function loadCsDrafts() {
+  const status = $("csStatus").value;
+  const { drafts, stats } = await api("GET", "/api/cs-drafts" + (status ? "?status=" + encodeURIComponent(status) : ""));
+  const c = stats.counts || {}; const pct = (v) => v === null || v === undefined ? "-" : `${Math.round(v * 100)}%`;
+  $("csStats").textContent = `待发送 ${c["待发送"] || 0} · 已发送 ${c["已发送"] || 0} · 改后发送 ${c["改后发送"] || 0}`
+    + `（改动率 ${pct(stats.edit_rate)}）· 不发 ${c["不发"] || 0}（${pct(stats.drop_rate)}）`;
+  $("csList").replaceChildren(...(drafts.length ? drafts.map((d) => {
+    const final = el("textarea", { rows: 3, placeholder: "改后发送：贴上实际发出去的文字", style: "width:100%;margin-top:6px" });
+    const decide = async (s) => {
+      await api("POST", `/api/cs-drafts/${encodeURIComponent(d.id)}/decide`, { status: s, final_text: final.value });
+      toast(`${d.id} 已记为${s}`); loadCsDrafts();
+    };
+    return el("div", { class: "card", style: "margin-bottom:12px" },
+      el("div", { class: "row", style: "gap:8px" }, el("strong", {}, d.id),
+        el("span", { class: "tag" }, `${d.shop_key} · ${d.language}`),
+        el("span", { class: "tag" }, CS_LEVEL[d.risk_level] || d.risk_level),
+        el("span", { class: "spacer" }), el("span", { class: "meta" }, `${d.status} · 任务 ${d.task_id || "-"} · ${fmtTime(d.created_at)}`)),
+      el("p", { class: "meta" }, "买家：", d.buyer_message),
+      el("pre", { style: "white-space:pre-wrap" }, d.draft),
+      d.translation_zh ? el("p", { class: "meta" }, "中文意思：", d.translation_zh) : "",
+      d.risk_reasons.length ? el("p", { class: "meta" }, "风险依据：", d.risk_reasons.join("；")) : "",
+      d.final_text ? el("p", { class: "meta" }, "实际发出：", d.final_text) : "",
+      d.status === "待发送" ? el("div", {},
+        el("div", { class: "row", style: "gap:8px" },
+          el("button", { class: "btn", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(d.draft); toast("已复制"); } catch (_) { toast("无法访问剪贴板，请选中草稿复制", true); } } }, "复制草稿"),
+          el("span", { class: "spacer" }),
+          el("button", { class: "btn primary", type: "button", onclick: () => decide("已发送") }, "原样发了"),
+          el("button", { class: "btn", type: "button", onclick: () => decide("改后发送") }, "改后发了"),
+          el("button", { class: "btn danger", type: "button", onclick: () => decide("不发") }, "不发")), final) : "");
+  }) : [el("div", { class: "card empty" }, "还没有客服草稿")]));
+}
+$("csStatus").onchange = loadCsDrafts;
+
+// ---- 客服话术 ----
+let cspData = null, cspCurrent = null;
+async function loadCsProfiles(select) {
+  cspData = await api("GET", "/api/cs-profiles");
+  $("cspOrder").textContent = cspData.order + "。";
+  const d = cspData.defaults;
+  $("cspDefaults").textContent = `字数上限：${d.max_chars}\n禁用说法：\n${d.banned_phrases.join("\n")}\n默认口吻样例：\n${d.voice_samples.join("\n")}`;
+  const keys = Object.keys(cspData.profiles);
+  $("cspList").replaceChildren(...(keys.length ? keys.map((k) => el("div", {
+      class: "item" + (cspCurrent === k ? " active" : ""), onclick: () => cspSelect(k) },
+    el("div", { class: "name" }, k, " ", el("span", { class: "tag" }, "自定义")),
+    el("div", { class: "desc" }, cspData.profiles[k].notes || `${(cspData.profiles[k].voice_samples || []).length} 句样例`)))
+    : [el("div", { class: "empty" }, "还没有自定义话术，全部用默认")]));
+  if (select !== undefined) cspSelect(select); else if (cspCurrent && cspData.profiles[cspCurrent]) cspSelect(cspCurrent);
+  else cspNew();
+}
+function cspSelect(k) {
+  const p = cspData.profiles[k] || {};
+  cspCurrent = k; $("cspKey").value = k; $("cspKey").readOnly = true;
+  $("cspVoice").value = (p.voice_samples || []).join("\n"); $("cspBanned").value = (p.banned_phrases || []).join("\n");
+  $("cspMax").value = p.max_chars || ""; $("cspNotes").value = p.notes || "";
+  $("cspInfo").textContent = "自定义"; $("cspDelete").disabled = false;
+  const [shop, lang] = k.split("/");
+  if (shop && shop !== "default" && shop !== "*") $("cspPShop").value = shop;
+  if (lang) $("cspPLang").value = lang;
+  for (const item of $("cspList").children) item.classList?.toggle("active", item.firstChild?.firstChild?.textContent === k);
+}
+function cspNew() {
+  cspCurrent = null; $("cspForm").reset(); $("cspKey").readOnly = document.body.classList.contains("readonly");
+  $("cspInfo").textContent = "新建：保存后才生效"; $("cspDelete").disabled = true;
+}
+$("cspNew").onclick = () => { cspNew(); $("cspKey").focus(); };
+$("cspForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const key = $("cspKey").value.trim();
+  const r = await api("PUT", `/api/cs-profiles/${encodeURIComponent(key)}`, {
+    voice_samples: $("cspVoice").value, banned_phrases: $("cspBanned").value, max_chars: $("cspMax").value, notes: $("cspNotes").value });
+  if (r.need_confirm) { toast("这项需要确认，去「规则配置」里保存", true); return; }
+  toast("已保存，下一条起草就用这套"); cspCurrent = key; await loadCsProfiles(key);
+};
+$("cspDelete").onclick = async () => {
+  if (!cspCurrent || !confirm(`删除「${cspCurrent}」这套话术？删除后这家店铺回到默认话术。`)) return;
+  await api("DELETE", `/api/cs-profiles/${encodeURIComponent(cspCurrent)}`);
+  toast("已删除，回到默认"); cspCurrent = null; await loadCsProfiles();
+};
+$("cspPreview").onclick = async () => {
+  const r = await api("POST", "/api/cs-preview", { shop_key: $("cspPShop").value.trim(), language: $("cspPLang").value.trim(),
+    buyer_message: $("cspPBuyer").value, draft: $("cspPDraft").value });
+  const level = { 1: "一级 只读答复", 2: "二级 对外承诺", 3: "三级 花钱或改订单" }[r.risk_level];
+  $("cspResult").replaceChildren(el("div", { class: "card", style: "margin-top:8px" },
+    el("p", {}, `用的话术：${r.profile} · 字数上限 ${r.max_chars} · ${level}`),
+    r.risk_reasons.length ? el("p", { class: "meta" }, "风险依据：", r.risk_reasons.join("；")) : "",
+    r.passed ? el("p", { style: "color:var(--ok)" }, "检查通过") :
+      el("ul", {}, ...r.problems.map((x) => el("li", { style: "color:var(--danger)" }, x)))));
+};
+
 // ---- 本机 CLI ----
 async function loadRuntimes() {
   const d = await api("GET", "/api/runtimes");
@@ -720,7 +872,7 @@ matchMedia('(max-width:760px)').addEventListener('change',syncNavigation);syncNa
 
 // ---- 页面导航 ----
 const loaders={tasks:loadTasks,memories:loadMemories,drafts:loadDrafts,recalls:loadRecalls,audit:loadAudit,
-  config:loadConfig,intakeView:loadIntake,runtimes:loadRuntimes,costs:loadCosts,shadow:loadShadow,listings:loadListings};
+  config:loadConfig,intakeView:loadIntake,runtimes:loadRuntimes,costs:loadCosts,shadow:loadShadow,listings:loadListings,csDrafts:loadCsDrafts,csProfiles:loadCsProfiles};
 async function navigate(tab,filter='all'){
   if(!loaders[tab])return;currentTab=tab;taskFilter=filter;
   const buttons=[...$('tabs').querySelectorAll('button')];
@@ -740,7 +892,7 @@ $('refreshPage').onclick=async()=>{const b=$('refreshPage');b.disabled=true;try{
 api('GET','/api/whoami').then(({role})=>{
   $('roleLabel').textContent=role;
   if(role!=='负责人'){document.body.classList.add('readonly');$('roleBanner').hidden=false;
-    for(const node of $('memForm').querySelectorAll('input, textarea, select'))node.readOnly=node.disabled=true;}
+    for(const node of document.querySelectorAll('#memForm input, #memForm textarea, #memForm select, #cspForm input, #cspForm textarea'))node.readOnly=node.disabled=true;}
 }).catch(()=>{$('roleLabel').textContent='连接失败';});
 navigate('tasks');
 api('GET','/api/drafts?status='+encodeURIComponent('待审核')).then(({drafts})=>setDraftCount(drafts.length)).catch(()=>{});

@@ -70,7 +70,8 @@ class ConsoleApp:
             return settings.shadow_actions
         holder = {"limits": settings.limits, "feishu": settings.feishu, "intake": settings.intake,
                   "browser": settings.browser, "computer_use": settings.computer_use,
-                  "runtime": settings.runtime, "approval": settings}.get(f.section)
+                  "runtime": settings.runtime, "outbound": settings.outbound,
+                  "customer_service": settings.customer_service, "approval": settings}.get(f.section)
         return getattr(holder, f.key, None)
 
     def config_view(self) -> dict[str, Any]:
@@ -99,6 +100,39 @@ class ConsoleApp:
                         "title": task.title if task else "", "reason": detail.get("reason", "")})
         return out
 
+    # ---- 客服话术（DESIGN.md 8.7）：按「店铺/语言」一套套编辑，存进 [customer_service] profiles ----
+    def cs_profiles_view(self) -> dict[str, Any]:
+        from .cs import DEFAULT_VOICE
+        cs = settings_from_raw(load_raw(self.settings_path)).customer_service
+        return {"profiles": cs.profiles, "defaults": {"voice_samples": DEFAULT_VOICE, "banned_phrases": cs.banned_phrases,
+                                                       "max_chars": cs.max_chars},
+                "order": "按「店铺/语言」→「店铺」→「*/语言」→ default 的顺序取第一个有的，都没有用内置默认"}
+
+    def cs_profile_save(self, key: str, body: dict[str, Any]) -> tuple[int, Any]:
+        from .cs import normalize_profile
+        profiles = dict(settings_from_raw(load_raw(self.settings_path)).customer_service.profiles)
+        profiles[key] = normalize_profile(key, body)
+        return self.config_update({"section": "customer_service", "key": "profiles", "value": profiles})
+
+    def cs_profile_delete(self, key: str) -> tuple[int, Any]:
+        profiles = dict(settings_from_raw(load_raw(self.settings_path)).customer_service.profiles)
+        if key not in profiles:
+            return 404, {"error": f"没有「{key}」这套话术"}
+        profiles.pop(key)
+        return self.config_update({"section": "customer_service", "key": "profiles", "value": profiles})
+
+    def cs_preview(self, body: dict[str, Any]) -> dict[str, Any]:
+        """拿一条买家消息和一段回复，看匹配哪套话术、过不过检查、判几级。不改任何东西。"""
+        from .cs import check_reply, profile_for, risk_level
+        cs = settings_from_raw(load_raw(self.settings_path)).customer_service
+        shop = body.get("shop_key") or "default"
+        profile = profile_for(cs, shop, body.get("language") or "en")
+        platform = (shop.split(":", 1)[0] if ":" in shop else "tiktok").lower()
+        problems = check_reply(body.get("draft", ""), profile, platform, body.get("buyer_message", ""))
+        level, reasons = risk_level(body.get("buyer_message", ""), body.get("draft", ""))
+        return {"profile": profile.key, "max_chars": profile.max_chars, "voice_samples": profile.voice_samples,
+                "notes": profile.notes, "passed": not problems, "problems": problems, "risk_level": level, "risk_reasons": reasons}
+
     def config_update(self, body: dict[str, Any]) -> tuple[int, Any]:
         f = field_for(body.get("section", ""), body.get("key", ""))
         if f is None:
@@ -109,8 +143,10 @@ class ConsoleApp:
             return 400, {"error": f"值不合法：{e}"}
         overrides = load_overrides(self._overrides_path())
         before = self._effective(settings_from_raw(load_raw(self.settings_path)), f)
-        if f.type == "json":
+        if f.type == "json" and not f.key:  # 整节配置（审批人、代发权限）：整节替换
             overrides[f.section] = {REPLACE: True, **value}
+        elif f.type == "json":  # 某一节里的一个字段（客服话术 profiles）：只替换这个字段，不动同节其它项
+            overrides.setdefault(f.section, {})[f.key] = {REPLACE: True, **value}
         else:
             overrides.setdefault(f.section, {})[f.key] = value
         base = tomllib.loads(self.settings_path.read_text(encoding="utf-8")) if self.settings_path.exists() else {}
@@ -210,6 +246,21 @@ class ConsoleApp:
                 from .shadow import ShadowService
                 settings = settings_from_raw(load_raw(self.settings_path))
                 return 200, ShadowService(self.store, settings, {}).report()
+            if parts == ["cs-profiles"] and method == "GET":
+                return 200, self.cs_profiles_view()
+            if len(parts) == 2 and parts[0] == "cs-profiles" and method == "PUT":
+                return self.cs_profile_save(parts[1], body)
+            if len(parts) == 2 and parts[0] == "cs-profiles" and method == "DELETE":
+                return self.cs_profile_delete(parts[1])
+            if parts == ["cs-preview"] and method == "POST":
+                return 200, self.cs_preview(body)
+            if parts == ["cs-drafts"] and method == "GET":
+                return 200, {"drafts": self.store.list_cs_drafts(query.get("status") or None),
+                             "stats": self.store.cs_stats()}
+            if len(parts) == 3 and parts[0] == "cs-drafts" and parts[2] == "decide" and method == "POST":
+                self.store.decide_cs_draft(parts[1], body.get("status", ""), body.get("final_text", ""), body.get("note", ""))
+                self.store.audit("cs_draft", parts[1], "decided", "console", {"status": body.get("status")})
+                return 200, {"ok": True}
             if parts == ["listings"] and method == "GET":
                 return 200, {"listings": self.store.listing_diffs(query.get("task") or None)}
             if parts == ["costs"] and method == "GET":
@@ -230,7 +281,12 @@ def allowed(role: str, method: str, path: str) -> bool:
     if role == ROLE_OWNER or method == "GET":
         return True
     parts = [p for p in path.split("/") if p][1:]
-    return len(parts) == 3 and parts[0] == "drafts" and parts[2] in ("approve", "reject") and method == "POST"
+    if method == "POST" and parts == ["cs-preview"]:  # 预览只算不改，运营也能用
+        return True
+    if method != "POST" or len(parts) != 3:
+        return False
+    # 审阅记忆草稿；客服回复是运营复制发送的，发送结果也由运营记
+    return (parts[0] == "drafts" and parts[2] in ("approve", "reject")) or (parts[0] == "cs-drafts" and parts[2] == "decide")
 
 
 def make_handler(app: ConsoleApp, token: str, review_token: str = "") -> type[BaseHTTPRequestHandler]:
@@ -292,7 +348,7 @@ def make_handler(app: ConsoleApp, token: str, review_token: str = "") -> type[Ba
                 return
             if not allowed(role, method, url.path):
                 app.store.audit("console", url.path, "forbidden", role, {"method": method})
-                self._send(403, {"error": "运营账号只能查看和审阅记忆草稿；改规则配置、记忆库、导入、回滚要用负责人的链接"})
+                self._send(403, {"error": "运营账号只能查看、审阅记忆草稿、记客服回复的发送结果；改规则配置、记忆库、导入、回滚要用负责人的链接"})
                 return
             body: dict[str, Any] = {}
             length = int(self.headers.get("Content-Length") or 0)

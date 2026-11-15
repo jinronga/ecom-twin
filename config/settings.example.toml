@@ -85,6 +85,23 @@ readable_chats = []
 allow_user_search = false
 
 # 消息入口与驱动。私聊负责人总是监听；群只监听这里列出的（机器人要在群里）
+[customer_service]
+# 客服回复起草（DESIGN.md 8.7，客服-0：只起草，人复制到平台后台发送）。控制台「规则配置」里也能改
+max_chars = 600
+# banned_phrases = ["5-star, positive review, 好评 => 不能诱导或交换好评"]   # 一行一组，不填用内置默认（诱导好评、删改评价、站外交易、推责）
+# 按「店铺/语言」「店铺」「*/语言」「default」的顺序取第一个有的：
+# [customer_service.profiles."tiktok:7300/en"]
+# voice_samples = ["Hi there, thanks for reaching out! Let me check that for you."]
+# notes = "美区，语气随意友好；退换货 30 天内"
+
+[outbound]
+# 对外说话的用词和长短（对照数字分身 0.3.1 人设）。agent 主动发进群的消息（notify_chat）发送前检查，不合规拒收、报错写清怎么改；
+# 发给负责人的汇报只把禁用词写进提示词。反引号里引用的原文、报错不查。控制台「规则配置」里也能改
+# banned_words = ["兜住 没兜住 => 说实际发生了什么", "抓手 赋能 闭环 => 说具体做了什么"]   # 一行一组，不填用内置默认
+wordy_check = true
+max_clauses = 8      # 群消息一段最多几个分句
+clause_max = 40      # 每个分句最多几个字
+
 [intake]
 listen_chats = []            # 例：["oc_xxx 运营群"]
 bot_name = "分身"            # 群里 @分身 视为点名

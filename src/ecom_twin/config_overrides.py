@@ -46,6 +46,13 @@ FIELDS = [
     Field("feishu", "readable_chats", "agent 可额外读取的会话", "list"),
     Field("feishu", "allow_user_search", "允许用负责人本人身份搜索聊天记录", "bool", True),
     Field("intake", "listen_chats", "监听的群", "list"),
+    Field("customer_service", "banned_phrases", "客服回复禁用说法（一行一组：说法, 说法 => 为什么不行）", "list"),
+    Field("customer_service", "max_chars", "客服回复字数上限", "number"),
+    Field("customer_service", "profiles", "客服话术（按「店铺/语言」：口吻样例、补充禁用说法、字数、备注）", "json"),
+    Field("outbound", "banned_words", "禁用的黑话（一行一组：词 词 => 换成什么说法）", "list"),
+    Field("outbound", "wordy_check", "群消息啰嗦检查（分句太多、太长、前后重复就拒发）", "bool"),
+    Field("outbound", "max_clauses", "群消息一段最多几个分句", "number"),
+    Field("outbound", "clause_max", "群消息每个分句最多几个字", "number"),
     Field("intake", "bot_name", "群里点名用的名字", "text"),
     Field("intake", "quiet_seconds", "群消息静默攒批（秒）", "number"),
     Field("intake", "ask_window_hours", "问后窗口（小时）", "number"),
@@ -84,8 +91,9 @@ def deep_merge(base: dict, over: dict) -> dict:
     for k, v in over.items():
         if isinstance(v, dict) and v.get(REPLACE):
             out[k] = {kk: vv for kk, vv in v.items() if kk != REPLACE}
-        elif isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = deep_merge(out[k], v)
+        elif isinstance(v, dict):
+            # 底下没有这一节也要往下走一层：里面可能还有带替换标记的字段（客服话术 profiles），标记要剥掉
+            out[k] = deep_merge(out[k] if isinstance(out.get(k), dict) else {}, v)
         else:
             out[k] = v
     return out

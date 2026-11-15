@@ -72,6 +72,21 @@ class ToolServer:
             Tool("check_compliance", "确定性合规检查：绝对化用语、医疗宣称、疑似侵权品牌词、站外联系方式、标题长度。"
                  "改标题、描述前先查；field 填「标题」或「描述」",
                  _obj({"text": s, "platform": s, "field": s}, ["text"]), self._check_compliance),
+            Tool("cs_profile", "客服起草前先取：这家店铺这种语言的话术设置（口吻样例、禁用说法、字数上限、备注）。"
+                 "shop_key 如 tiktok:7300，language 如 en / ar / zh",
+                 _obj({"shop_key": s, "language": s}, ["shop_key", "language"]), self._cs_profile),
+            Tool("cs_check_reply", "检查客服回复草稿：合规、禁用说法、字数、联系方式、有没有答应花钱的动作，并由代码给出风险等级"
+                 "（3 花钱或改订单 / 2 对外承诺 / 1 只读答复）。不通过就按问题改了再查",
+                 _obj({"draft": s, "buyer_message": s, "shop_key": s, "language": s}, ["draft", "shop_key"]),
+                 self._cs_check_reply),
+            Tool("cs_submit_draft", "提交客服回复草稿（检查不通过会被拒收）。买家原话里的邮箱、电话会打码存档。"
+                 "translation_zh 写回复的中文意思，给负责人审阅用；回复本身是中文就留空。提交后人复制到平台后台发送",
+                 _obj({"shop_key": s, "language": s, "buyer_message": s, "draft": s, "translation_zh": s},
+                      ["shop_key", "language", "buyer_message", "draft"]), self._cs_submit_draft),
+            Tool("cs_mark_sent", "负责人回复了草稿的发送结果时调用：status 是 已发送 / 改后发送 / 不发；"
+                 "改后发送要把实际发出去的文字填进 final_text",
+                 _obj({"draft_id": s, "status": s, "final_text": s, "note": s}, ["draft_id", "status"]),
+                 self._cs_mark_sent),
             Tool("staging_collect", "【采集箱暂存区写入】按货源链接（1688、淘宝、AliExpress 等）采集到妙手公共采集箱，"
                  "返回 {货源ID: 公共采集箱ID}。买家看不到，不需要审批，但会留痕并列进发布审批卡片",
                  _obj({"links": {"type": "array", "items": s}}, ["links"]), self._staging_collect),
@@ -188,6 +203,46 @@ class ToolServer:
         checker = self.app.compliance or __import__("ecom_twin.compliance", fromlist=["x"]).ComplianceChecker()
         found = checker.check(a["text"], a.get("platform") or "tiktok", a.get("field") or "标题")
         return {"通过": not checker.blocking(found), "问题": [str(v) for v in found]}
+
+    # ---- 客服起草（DESIGN.md 8.7，客服-0） ----
+    def _cs(self, shop_key: str, language: str):
+        from .cs import profile_for
+        return profile_for(self.app.settings.customer_service, shop_key, language or "en")
+
+    def _cs_profile(self, a):
+        p = self._cs(a["shop_key"], a.get("language", ""))
+        return {"话术设置": p.key, "口吻样例": p.voice_samples, "禁用说法": p.banned_phrases, "字数上限": p.max_chars,
+                "备注": p.notes, "售后政策": "去记忆库按「回复客服消息」比索引，读这家店铺的售后政策；没有就在汇报里写明缺什么"}
+
+    def _cs_check_reply(self, a):
+        from .cs import check_reply, risk_level
+        platform = (a["shop_key"].split(":", 1)[0] or "tiktok").lower()
+        problems = check_reply(a["draft"], self._cs(a["shop_key"], a.get("language", "")), platform,
+                               a.get("buyer_message", ""), self.app.compliance)
+        level, reasons = risk_level(a.get("buyer_message", ""), a["draft"])
+        return {"通过": not problems, "问题": problems, "风险等级": level, "风险依据": reasons}
+
+    def _cs_submit_draft(self, a):
+        from .cs import mask_pii
+        checked = self._cs_check_reply(a)
+        if not checked["通过"]:
+            raise ValueError("草稿没通过检查，改完再交：" + "；".join(checked["问题"]))
+        platform = (a["shop_key"].split(":", 1)[0] or "tiktok").lower()
+        draft_id = self.app.store.add_cs_draft(self.task_id, a["shop_key"], platform, a["language"],
+                                               mask_pii(a["buyer_message"]), a["draft"], a.get("translation_zh", ""),
+                                               checked["风险等级"], checked["风险依据"])
+        self.app.store.audit("task", self.task_id, "cs_draft", "agent", {"id": draft_id, "level": checked["风险等级"]})
+        hint = {3: "三级（花钱或改订单）：回复里只说会核实处理；退款、补发、补偿的建议方案和依据写进汇报，由负责人定，"
+                   "他定了再改回复",
+                2: "二级（对外承诺）：汇报里提醒负责人确认承诺能兑现再发",
+                1: "一级（只读答复）：负责人复制发送即可"}[checked["风险等级"]]
+        return {"draft_id": draft_id, "风险等级": checked["风险等级"], "说明": hint,
+                "下一步": "汇报里贴出买家原话（已打码）、草稿、中文意思、风险等级；平台没有接口，由负责人复制到后台发送，"
+                        "发完他回复结果时用 cs_mark_sent 记下"}
+
+    def _cs_mark_sent(self, a):
+        self.app.store.decide_cs_draft(a["draft_id"], a["status"], a.get("final_text", ""), a.get("note", ""))
+        return {"ok": True}
 
     def _staging(self):
         if self.app.staging is None:
@@ -397,7 +452,7 @@ class ToolServer:
         if not outbound._allowed(task.origin_chat_id, "notify"):
             raise FeishuError(f"群 {task.origin_chat_id} 没有开放主动知会（notify）代发权限；把要知会的内容写进汇报，由负责人决定")
         from .outbound import check
-        check(a["text"], to_group=True)  # 不合规直接拒收，报错里写着怎么改
+        check(a["text"], to_group=True, cfg=self.app.settings.outbound)  # 不合规直接拒收，报错里写着怎么改
         msg_id = self.app.feishu.send_chat_text(task.origin_chat_id, a["text"])
         self.app.store.add_outbound(self.task_id, task.origin_chat_id, "", "notify", "群新消息", a["text"], msg_id)
         self.app.store.audit("task", self.task_id, "outbound_notify", "agent", {"chat": task.origin_chat_id})
@@ -473,7 +528,7 @@ def tool_names(desktop: bool = False) -> list[str]:
     """供运行时设置允许的工具清单。desktop：开了 AppleScript 操作电脑时加上原生窗口取证工具。"""
     return (DESKTOP_TOOLS if desktop else []) + ["miaoshou_list_shops", "miaoshou_search_collect_box", "miaoshou_get_collect_item",
             "miaoshou_tiktok_category_tree", "miaoshou_tiktok_category_metadata", "price_skus",
-            "check_compliance", "staging_collect", "staging_get_common", "staging_edit_common",
+            "check_compliance", "cs_profile", "cs_check_reply", "cs_submit_draft", "cs_mark_sent", "staging_collect", "staging_get_common", "staging_edit_common",
             "staging_claim_to_tiktok", "staging_claim_to_shop", "staging_get_listing", "staging_edit_listing",
             "feishu_context", "feishu_chat_history", "feishu_thread", "feishu_search",
             "get_shop_context", "load_sop", "capture_page", "platform_list", "platform_open",

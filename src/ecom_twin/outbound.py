@@ -8,6 +8,8 @@
 内容闸门（对照数字分身 slack-send 的三条硬规则：不 @所有人、不带凭证、单条不超过 500 字）：
 - agent 主动发的（notify_chat）不合规就拒收，报错写清哪条不合规、怎么改，agent 改完重发
 - 系统发的回执、汇报、提问 agent 没机会再改：密钥打码、@所有人去掉；发进群里超长的，群里发前一段，完整的私聊负责人
+- 群消息的用词和长短（对照数字分身 0.3.1 人设）：禁用黑话、分句太多 / 太长 / 前后几乎同字都拒收，报错写清怎么改。
+  反引号里的代码和原文引用不查，贴报错、贴单号照样可以
 """
 
 from __future__ import annotations
@@ -35,7 +37,67 @@ def _secret_values() -> list[str]:
     return [v for k, v in os.environ.items() if _SECRET_ENV.search(k) and len(v) >= 8]
 
 
-def problems(text: str, to_group: bool) -> list[str]:
+def parse_banned_words(lines: list[str]) -> list[tuple[list[str], str]]:
+    """["兜住 没兜住 => 说实际发生了什么", ...] → [(词表, 改法)]；# 开头的行是注释。"""
+    rules = []
+    for raw in lines or []:
+        line = str(raw).strip()
+        if not line or line.startswith("#"):
+            continue
+        words_part, _, hint = line.partition("=>")
+        words = [w for w in re.split(r"[\s,，、|]+", words_part) if w]
+        if words:
+            rules.append((words, hint.strip() or "换成这件事本来的说法"))
+    return rules
+
+
+def _plain(text: str) -> str:
+    """去掉代码块和行内反引号：引用的原文、报错、单号不算自己说的话。"""
+    return re.sub(r"`[^`\n]*`", " ", re.sub(r"```.*?```", " ", text, flags=re.S))
+
+
+def split_clauses(text: str) -> list[str]:
+    """按逗号、句号、问号、换行拆分句；只剩一个字的（「嗯，」）不算一句。"""
+    return [c.strip() for c in re.split(r"[，,。；;！!？?…\n]+", text) if len(re.sub(r"\s", "", c)) >= 2]
+
+
+def _bigrams(text: str) -> set[str]:
+    chars = re.sub(r"[\s\W_]+", "", text.lower())
+    return {chars[i:i + 2] for i in range(len(chars) - 1)}
+
+
+REPEAT_OVERLAP = 0.6  # 两句的二字片段重合到短的那句的六成，就当在说同一件事（数字分身实测的阈值）
+
+
+def wording_problems(text: str, cfg: Any) -> list[str]:
+    """禁用词和啰嗦检查，返回问题列表（空 = 过）。cfg 是 [outbound] 配置。"""
+    if cfg is None:
+        return []
+    plain = _plain(text)
+    found = []
+    for words, hint in parse_banned_words(cfg.banned_words):
+        hits = [w for w in words if w in plain]
+        hit = max(hits, key=len) if hits else None  # 「没兜住」里也有「兜住」：报原文里实际写的那个更准
+        if hit:
+            found.append(f"用了「{hit}」：{hint}")
+    if cfg.wordy_check:
+        clauses = split_clauses(plain)
+        if len(clauses) > cfg.max_clauses:
+            found.append(f"这段话有 {len(clauses)} 个分句，最多 {cfg.max_clauses} 个：删掉推导过程，只留结论和要对方做的事")
+        for clause in clauses:
+            n = len(re.sub(r"\s", "", clause))
+            if n > cfg.clause_max:
+                found.append(f"「{clause[:30]}…」一句就 {n} 字，每个分句不超过 {cfg.clause_max} 字：拆开说")
+        grams = [_bigrams(c) for c in clauses]
+        for i in range(len(clauses)):
+            for j in range(i + 1, len(clauses)):
+                if len(grams[i]) >= 3 and len(grams[j]) >= 3 and \
+                        len(grams[i] & grams[j]) / min(len(grams[i]), len(grams[j])) >= REPEAT_OVERLAP:
+                    found.append(f"「{clauses[i]}」和「{clauses[j]}」说的几乎是同样的字：删掉一句")
+    return found
+
+
+def problems(text: str, to_group: bool, cfg: Any = None) -> list[str]:
     found = []
     if AT_ALL.search(text):
         found.append("用了 @所有人：不允许提醒全员，去掉；要提醒具体的人就写名字")
@@ -44,12 +106,14 @@ def problems(text: str, to_group: bool) -> list[str]:
     if to_group and len(text) > MAX_GROUP_CHARS:
         found.append(f"超过 {MAX_GROUP_CHARS} 字（现在 {len(text)} 字）：先删掉推导过程，只留结论；"
                      "还装不下就按完整意思拆成几条分别发")
+    if to_group:
+        found += wording_problems(text, cfg)
     return found
 
 
-def check(text: str, to_group: bool) -> None:
-    """agent 主动发的消息用：不合规直接拒收。"""
-    found = problems(text, to_group)
+def check(text: str, to_group: bool, cfg: Any = None) -> None:
+    """agent 主动发的消息用：不合规直接拒收。cfg：[outbound] 配置，给了就加查禁用词和啰嗦。"""
+    found = problems(text, to_group, cfg)
     if found:
         raise OutboundRejected("消息没有发出，改完重发：" + "；".join(found))
 
