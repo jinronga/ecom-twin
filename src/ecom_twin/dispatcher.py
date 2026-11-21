@@ -26,7 +26,7 @@ from .chrome_guard import INTERACTIVE_TOOLS, READONLY_TOOLS, upstream_command, e
 from .mcp_server import SERVER_NAME, tool_names
 from . import evidence
 from .memory import MemoryStore
-from .models import Proposal, TaskStatus
+from .models import Proposal, TaskSource, TaskStatus
 from .sops import SopLibrary
 from .store import utcnow
 from .runtime import AgentRuntime, RunSpec
@@ -90,6 +90,13 @@ class RunResult:
     text: str = ""
     error: str = ""
     retryable: bool = False
+
+
+def enqueue_prompt(app: Any, workroot: Path, task_id: str, prompt: str, resume: bool) -> None:
+    """把一轮提示词放进任务队列。任务服务每秒领一次队列，所以别的进程（控制台、MCP）也能用它派活；
+    合并和领取都在跨进程写事务里做（store.enqueue_merged / claim_next_task），不会把上一轮重跑一遍。"""
+    app.store.enqueue_merged(task_id, Path(workroot) / task_id, prompt, resume)
+    app.tasks.set_status(task_id, TaskStatus.QUEUED)
 
 
 class Dispatcher:
@@ -166,22 +173,8 @@ class Dispatcher:
         if self.pool is None:
             self.run_task(task_id, prompt, resume)
             return
-        path = self.workroot / task_id / 'queue_prompt.json'
-        path.parent.mkdir(parents=True, exist_ok=True)
         with self._queue_lock:
-            payload = {'prompt': prompt, 'resume': resume}
-            waiting = self.app.store.get_task_queue(task_id)
-            if waiting and waiting['state'] == 'queued' and path.exists():
-                # 还没开跑又来一条：并进同一轮，前面的消息不能被覆盖掉
-                earlier = json.loads(path.read_text(encoding='utf-8'))
-                payload = {'prompt': f"{earlier['prompt']}\n\n（随后又补充）\n{prompt}", 'resume': earlier['resume']}
-            path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
-            try:
-                path.chmod(0o600)
-            except OSError:
-                pass
-            self.app.store.enqueue_task(task_id, str(path), payload['resume'])
-        self.app.tasks.set_status(task_id, TaskStatus.QUEUED)
+            enqueue_prompt(self.app, self.workroot, task_id, prompt, resume)
         self.start_queue_worker()
 
     INTERRUPTED_NOTE = ("（上一轮做到一半时服务重启被中断了。先看任务卡里的提案状态和看板上的步骤，"
@@ -455,7 +448,8 @@ class Dispatcher:
         self.app.tasks.set_status(task_id, TaskStatus.RUNNING)
         # 记忆只注入索引，正文由 agent 按这一轮要做的动作自己读（对照数字分身：强制召回试过又撤回了，
         # 按话题塞进来的正文常常不是这一轮要用的，反而挤掉上下文）
-        primary = task.runtime if (resume and task.runtime) else settings.default
+        # 控制台对话在建单时就选了底座，第一轮也按选的跑
+        primary = task.runtime if task.runtime and (resume or task.source == TaskSource.CHAT) else settings.default
         order = [primary] + [k for k in (settings.default, settings.fallback) if k != primary]
         spec = self._spec(task_id, prompt)
         result = RunResult(False, error="没有可用的底座")
@@ -543,6 +537,14 @@ class Dispatcher:
             )
 
         task = self.app.store.get_task(task_id)
+        waiting_note = f"\n\n（在等：{task.waiting}）" if task.waiting else ""
+        if task.source == TaskSource.CHAT:
+            # 控制台对话：回复写进对话记录，在对话框里显示，不发飞书
+            self.app.store.add_chat_message(task_id, "assistant", body + waiting_note)
+            return
+        if self.app.store.list_chat_messages(task_id):
+            # 负责人在控制台详情里补充过：这一轮的回复也记一份，详情里看得到；飞书照常汇报
+            self.app.store.add_chat_message(task_id, "assistant", body + waiting_note)
         if triage and not triage.relevant and task.origin_chat_type == "group":
             # 群消息判为不相关：不在群里回一句「无需处理」打扰大家，留痕已在审计里
             return

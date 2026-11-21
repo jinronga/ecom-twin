@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from .models import TaskSource
 from .store import utcnow
+from .tasks import PENDING_SCENE, title_from_text
 
 
 class Judge(Protocol):
@@ -338,7 +339,8 @@ class Intake:
             return decision.reason
 
         if decision.task_id is None:
-            task = self.app.tasks.create(text[:40], TaskSource.SELF_DM if is_p2p else TaskSource.MESSAGE, "待定",
+            task = self.app.tasks.create(title_from_text(text), TaskSource.SELF_DM if is_p2p else TaskSource.MESSAGE,
+                                         PENDING_SCENE,
                                          anchors=self.engine.anchors(text),
                                          owner=self.app.settings.feishu.owner_open_id)
             task.origin_message_id = msgs[-1]["message_id"]

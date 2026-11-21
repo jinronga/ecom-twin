@@ -74,9 +74,9 @@ def normalize_message(item: dict[str, Any]) -> dict[str, Any]:
 class FeishuClient(Protocol):
     def send_card(self, open_id: str, card: dict[str, Any]) -> str: ...
     def send_text(self, open_id: str, text: str) -> str: ...
-    def reply_text(self, message_id: str, text: str) -> str: ...
+    def reply_text(self, message_id: str, text: str, in_thread: bool = False) -> str: ...
     def get_parent_id(self, message_id: str) -> str | None: ...
-    def reply_image(self, message_id: str, image_path: str) -> str: ...
+    def reply_image(self, message_id: str, image_path: str, in_thread: bool = False) -> str: ...
     def send_chat_text(self, chat_id: str, text: str) -> str: ...
     def base_create(self, app_token: str, table_id: str, fields: dict[str, Any]) -> str: ...
     def base_update(self, app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> None: ...
@@ -140,14 +140,15 @@ class LarkCliFeishu:
                                "content": json.dumps({"text": text}, ensure_ascii=False)})
         return data["message_id"]
 
-    def reply_text(self, message_id: str, text: str) -> str:
-        data = self._api(
-            "POST", f"/open-apis/im/v1/messages/{message_id}/reply",
-            data={"msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
-        )
+    def reply_text(self, message_id: str, text: str, in_thread: bool = False) -> str:
+        """in_thread=True 时以话题形式回复（reply_in_thread）：一个任务的往来都收进同一个话题，不在会话主界面刷屏。"""
+        body = {"msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)}
+        if in_thread:
+            body["reply_in_thread"] = True
+        data = self._api("POST", f"/open-apis/im/v1/messages/{message_id}/reply", data=body)
         return data["message_id"]
 
-    def reply_image(self, message_id: str, image_path: str) -> str:
+    def reply_image(self, message_id: str, image_path: str, in_thread: bool = False) -> str:
         """上传图片拿 image_key，再回复到消息的 thread（证据截图）。"""
         cmd = [self.binary, "api", "POST", "/open-apis/im/v1/images", "--as", self.identity, "--format", "json",
                "--data", json.dumps({"image_type": "message"}), "--file", f"image={image_path}"]
@@ -159,8 +160,10 @@ class LarkCliFeishu:
         image_key = (payload.get("data") or {}).get("image_key")
         if proc.returncode != 0 or not image_key:
             raise FeishuError(f"上传图片失败：{(payload.get('error') or {}).get('message') or payload.get('msg')}")
-        data = self._api("POST", f"/open-apis/im/v1/messages/{message_id}/reply",
-                         data={"msg_type": "image", "content": json.dumps({"image_key": image_key})})
+        body = {"msg_type": "image", "content": json.dumps({"image_key": image_key})}
+        if in_thread:
+            body["reply_in_thread"] = True
+        data = self._api("POST", f"/open-apis/im/v1/messages/{message_id}/reply", data=body)
         return data["message_id"]
 
     def get_message(self, message_id: str) -> dict[str, Any] | None:
@@ -292,13 +295,13 @@ class ConsoleFeishu:
     def send_text(self, open_id: str, text: str) -> str:
         return self._out("消息", open_id, text)
 
-    def reply_text(self, message_id: str, text: str) -> str:
-        return self._out("回复", message_id, text)
+    def reply_text(self, message_id: str, text: str, in_thread: bool = False) -> str:
+        return self._out("话题回复" if in_thread else "回复", message_id, text)
 
     def get_parent_id(self, message_id: str) -> str | None:
         return None
 
-    def reply_image(self, message_id: str, image_path: str) -> str:
+    def reply_image(self, message_id: str, image_path: str, in_thread: bool = False) -> str:
         return self._out("图片", message_id, image_path)
 
     def send_chat_text(self, chat_id: str, text: str) -> str:
@@ -375,9 +378,11 @@ class FakeFeishu:
         self.sent.append({"type": "text", "to": open_id, "text": text, "message_id": mid})
         return mid
 
-    def reply_text(self, message_id: str, text: str) -> str:
+    def reply_text(self, message_id: str, text: str, in_thread: bool = False) -> str:
+        if in_thread and getattr(self, "thread_unsupported", False):
+            raise FeishuError("飞书接口错误 230071: The chat does not support thread reply")
         mid = self._next("om")
-        self.sent.append({"type": "reply", "reply_to": message_id, "text": text, "message_id": mid})
+        self.sent.append({"type": "reply", "reply_to": message_id, "text": text, "message_id": mid, "in_thread": in_thread})
         return mid
 
     def get_parent_id(self, message_id: str) -> str | None:
@@ -399,7 +404,7 @@ class FakeFeishu:
     def search_messages(self, query: str, start_ts: int, end_ts: int, limit: int = 20) -> list[dict[str, Any]]:
         return [m for m in self.history if query in m["text"]][:limit]
 
-    def reply_image(self, message_id: str, image_path: str) -> str:
+    def reply_image(self, message_id: str, image_path: str, in_thread: bool = False) -> str:
         mid = self._next("om")
         self.sent.append({"type": "image", "reply_to": message_id, "path": image_path, "message_id": mid})
         return mid

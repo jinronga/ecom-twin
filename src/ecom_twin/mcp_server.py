@@ -33,6 +33,22 @@ from .staging import StagingError
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "ecom"
 
+# 从 agent 的工具调用里认出任务的场景，回填建单时的「待定」（TaskService.fill_context）
+SCENE_BY_SOP = {
+    "tiktok-listing-via-miaoshou": "上品",
+    "customer-service-reply": "客服回复",
+    "customer-complaint": "客诉",
+    "inventory-check": "库存巡检",
+    "price-adjustment": "调价",
+    "product-selection": "选品",
+    "product-discovery": "选品",
+}
+SCENE_BY_ACTION = {"miaoshou.tiktok.publish": "上品"}
+SCENE_BY_TOOL_PREFIX = {"cs_": "客服回复", "staging_": "上品", "selection_": "选品", "radar_": "选品"}
+# 这些工具的 shop_key 参数指的就是任务在做的那家店铺（browser.flow 的 platform:<key> 不是店铺，不收）
+SHOP_KEY_TOOLS = {"cs_profile", "cs_check_reply", "cs_submit_draft", "get_shop_context", "submit_proposal",
+                  "staging_claim_to_shop", "staging_get_listing", "staging_edit_listing"}
+
 
 @dataclass
 class Tool:
@@ -88,6 +104,55 @@ class ToolServer:
                  "改后发送要把实际发出去的文字填进 final_text",
                  _obj({"draft_id": s, "status": s, "final_text": s, "note": s}, ["draft_id", "status"]),
                  self._cs_mark_sent),
+            Tool("selection_playbook", "选品开工先取：按国家和平台匹配选品剧本，返回规则（门槛、权重、数据源、调研时效、"
+                 "种子词）和剧本正文里的市场经验。region 填两位国家代码如 SA、US，platform 如 tiktok / noon",
+                 _obj({"region": s, "platform": s}, ["region"]), self._selection_playbook),
+            Tool("selection_discover", "找方向：负责人还不知道做什么品时用（不需要货源价、不需要妙手）。按国家扫一遍常见的不带电品类，"
+                 "代码按需求宽度、能细分、痛点、节日打分排序，返回方向清单、细分切入点、示例下拉词和给人核实的链接。"
+                 "exclude 填负责人不想做的（如「电子」「儿童」「大件」），focus 填他提到的想看的品类词。要几十秒",
+                 _obj({"region": s, "platform": s, "exclude": {"type": "array", "items": s},
+                       "focus": {"type": "array", "items": s}, "top": i}, ["region"]), self._selection_discover),
+            Tool("selection_research", "选品市场调研：按剧本登记的数据源（下拉词、每日热搜、新闻、节日、ERP 销量、"
+                 "负责人数据、表格、第三方接口）取数，存成快照，返回快照编号、各数据源结果和比上次多出来的新词。"
+                 "owner_data 填负责人给的数据原文；csv_path 填任务目录里的表格路径",
+                 _obj({"region": s, "platform": s, "owner_data": s, "csv_path": s}, ["region"]), self._selection_research),
+            Tool("selection_score", "确定性打分：按剧本门槛和权重给候选商品打分，毛利由代码按售价反算。不要自己算分或毛利。"
+                 "必须带 snapshot_id（selection_research 返回的、没过期的快照）。"
+                 "每个候选给 name、category、price（当地售价，美元）、source_price + exchange_rate（货源价和汇率）、"
+                 "shipping、commission_rate、weight_kg、demand（0~100 需求热度）、competition（0~100，越高越卷）、"
+                 "evidence（数据出处：调研快照、链接）。没给的佣金率、运费、汇率按剧本和实时汇率补，补了哪些看 filled；"
+                 "需求、竞争没给的在 missing 里",
+                 _obj({"region": s, "platform": s, "snapshot_id": s, "candidates": arr}, ["region", "snapshot_id", "candidates"]),
+                 self._selection_score),
+            Tool("radar_lead_submit", "选品雷达：把一个值得跟进的方向提交成线索，进线索池等负责人处理。"
+                 "rule 填雷达规则名，region 两位国家代码，title 一句话说清方向，evidence 写快照编号和里面的原词，"
+                 "suggestion 写建议下一步。同一规则、国家、标题还没处理的不会重复建",
+                 _obj({"rule": s, "region": s, "platform": s, "title": s, "direction": s, "evidence": s,
+                       "suggestion": s, "snapshot_id": s}, ["region", "title", "evidence"]), self._radar_lead_submit),
+            Tool("workspace_overview", "工作区概况：各状态任务数、需要负责人处理的任务、新线索数、雷达规则和下次运行时间。"
+                 "负责人在「问分身」里问「今天有什么要处理」「现在什么情况」时先调这个",
+                 _obj({}), self._workspace_overview),
+            Tool("lead_list", "列出选品雷达的线索。status 可填 新 / 在看 / 已转选品 / 放弃，不填列全部",
+                 _obj({"status": s}), self._lead_list),
+            Tool("lead_set_status", "改线索状态：在看 / 放弃（放弃必须写 reason）。负责人明确说了才改",
+                 _obj({"lead_id": s, "status": s, "reason": s}, ["lead_id", "status"]), self._lead_set_status),
+            Tool("lead_convert", "把线索转成选品任务（建任务排进队列，任务服务接手）。负责人明确说要转才调",
+                 _obj({"lead_id": s}, ["lead_id"]), self._lead_convert),
+            Tool("radar_list", "列出选品雷达规则：什么时候跑（中文说明）、盯什么、下次运行、上次结果",
+                 _obj({}), self._radar_list),
+            Tool("holiday_calendar", "查某个国家未来几周的节日和大促日期（含斋月、开斋节、黑五、白色星期五、双十一等，"
+                 "农历和伊斯兰历按年份查表；开斋节、宰牲节、白色星期五是近似日期）。定雷达的到期日、判断备货窗口时用",
+                 _obj({"region": s, "weeks": i}, ["region"]), self._holiday_calendar),
+            Tool("radar_trigger", "让某条雷达规则马上跑一次（任务服务一分钟内执行）",
+                 _obj({"name": s}, ["name"]), self._radar_trigger),
+            Tool("radar_rule_propose", "按负责人的话新建一条雷达规则，生成草稿等负责人确认（不会直接生效）。"
+                 "schedule 是 5 段 cron（分 时 日 月 周），例：每天 9 点 \"0 9 * * *\"，每周一四 8:30 \"30 8 * * 1,4\"，"
+                 "每月 1 号 \"0 9 1 * *\"，每 6 小时 \"0 */6 * * *\"；timezone 用 IANA 名（北京 Asia/Shanghai、"
+                 "沙特 Asia/Riyadh、美西 America/Los_Angeles）。负责人没说时区就用 Asia/Shanghai，没说时间就问一句",
+                 _obj({"name": s, "schedule": s, "timezone": s, "regions": {"type": "array", "items": s},
+                       "watch": {"type": "array", "items": s}, "modifiers": {"type": "array", "items": s},
+                       "platform": s, "max_leads": i, "expires_at": s, "note": s},
+                      ["name", "schedule", "regions", "watch"]), self._radar_rule_propose),
             Tool("staging_collect", "【采集箱暂存区写入】按货源链接（1688、淘宝、AliExpress 等）采集到妙手公共采集箱，"
                  "返回 {货源ID: 公共采集箱ID}。买家看不到，不需要审批，但会留痕并列进发布审批卡片",
                  _obj({"links": {"type": "array", "items": s}}, ["links"]), self._staging_collect),
@@ -206,6 +271,171 @@ class ToolServer:
         return {"通过": not checker.blocking(found), "问题": [str(v) for v in found]}
 
     # ---- 客服起草（DESIGN.md 8.7，客服-0） ----
+    def _playbook(self, region: str, platform: str = ""):
+        from .selection import PlaybookError, load_playbooks, match_playbook
+        playbooks, errors = load_playbooks(self.memory.all())
+        try:
+            return match_playbook(playbooks, region, platform), errors
+        except PlaybookError as e:
+            raise ValueError(str(e) + (f"（另有剧本规则写错没参与匹配：{'；'.join(errors)}）" if errors else "")) from e
+
+    def _selection_playbook(self, a):
+        from dataclasses import asdict
+        from .selection import RULES_SECTION, SOURCES, effective_min_margin
+        playbook, errors = self._playbook(a["region"], a.get("platform", ""))
+        self.memory.read(playbook.name, task_id=self.task_id)  # 记进召回日志
+        rules = asdict(playbook.rules)
+        rules["min_margin"] = effective_min_margin(playbook.rules, self.app.settings.limits.min_margin_rate)
+        experience = "\n\n".join(f"## {title}\n{text}" for title, text in self.memory.by_name(playbook.name).sections()
+                                  if title != RULES_SECTION)
+        return {"剧本": playbook.name, "版本": playbook.version, "规则": rules,
+                "数据源说明": {s: SOURCES[s] for s in playbook.rules.sources}, "市场经验": experience,
+                "说明": "按规则里的 sources 和 seeds 先调研，再用 selection_score 打分；"
+                        "剧本里的经验过时了用 propose_memory 提修改草稿", "其他剧本的问题": errors}
+
+    def _selection_discover(self, a):
+        from .discovery import discover
+        playbook, _ = self._playbook(a["region"], a.get("platform", ""))
+        result = discover(self.app.store, playbook, a["region"], a.get("platform", ""), exclude=a.get("exclude") or [],
+                          focus=a.get("focus") or [], top=int(a.get("top") or 8))
+        self.app.store.audit("task", self.task_id, "selection_discover", "agent", {"snapshot": result["快照"]})
+        result["下一步"] = ("挑 3~5 个方向讲清为什么（引用示例下拉词和细分切入点），告诉负责人按方向去 1688 等找货源；"
+                          "值得长期盯的可以用 radar_rule_propose 建雷达，或用 radar_lead_submit 存进线索池")
+        return result
+
+    def _selection_research(self, a):
+        from .research import run_research
+        playbook, _ = self._playbook(a["region"], a.get("platform", ""))
+        csv_path = None
+        if a.get("csv_path"):
+            csv_path = Path(a["csv_path"]).resolve()
+            root = Path(self.evidence_dir).parent.resolve()
+            if root not in csv_path.parents or not csv_path.is_file():
+                raise ValueError(f"表格要放在本任务目录里：{root}")
+        r = self.app.settings.research
+        snap = run_research(self.app.store, playbook, a["region"], a.get("platform", ""), self.task_id,
+                            owner_input=a.get("owner_data") or "", csv_path=csv_path,
+                            third_party={"url": r.third_party_url, "key_env": r.third_party_key_env})
+        self.app.store.audit("task", self.task_id, "selection_research", "agent", {"snapshot": snap["id"]})
+        return {"快照": snap["id"], "剧本": snap["playbook"], "版本": snap["playbook_version"],
+                "数据源": {k: {"状态": v.get("status"), **{x: v[x] for x in ("note", "error") if x in v}}
+                         for k, v in snap["data"].items()},
+                "新词": snap["new_terms"][:50], "结果": snap["data"],
+                "说明": "数据只证明有人在搜，不证明卖得动；失败、跳过的数据源在汇报里写明。"
+                        "找候选时每个分（需求、竞争）写清是用快照里哪条数据估的，打分时带上这个快照编号"}
+
+    def _selection_score(self, a):
+        from .research import snapshot_problems
+        from .selection import score_candidates
+        if not isinstance(a.get("candidates"), list) or not a["candidates"]:
+            raise ValueError("candidates 要给至少一个候选")
+        playbook, _ = self._playbook(a["region"], a.get("platform", ""))
+        snapshot = self.app.store.get_research_snapshot(str(a.get("snapshot_id") or ""))
+        problems = snapshot_problems(snapshot, playbook.rules, a["region"])
+        if problems:
+            raise ValueError("不能出清单：" + "；".join(problems))
+        from .research import fx_rate
+        from .selection import apply_defaults
+        try:
+            fx = fx_rate(self.app.store)["rate"]
+        except Exception:  # noqa: BLE001 —— 取不到实时汇率：候选没给汇率的会被打分拦下，报「缺汇率」
+            fx = None
+        candidates, filled = [], {}
+        for c in a["candidates"]:
+            full, f = apply_defaults(c, playbook.rules, a.get("platform", ""), fx)
+            candidates.append(full)
+            filled[str(c.get("name") or "未命名")] = f
+        results = score_candidates(candidates, playbook.rules, self.app.settings.limits.min_margin_rate)
+        for r in results:
+            r["snapshot_id"] = snapshot["id"]
+            r["filled"] = filled.get(r["name"], {})
+        return {"剧本": playbook.name, "版本": playbook.version, "快照": snapshot["id"], "结果": results,
+                "说明": "汇报时写明用的是哪份剧本哪个版本、哪份调研快照；没通过的写出卡在哪条；理由里的数字只能用这里算出来的"}
+
+    def _workspace_overview(self, a):
+        from collections import Counter
+        tasks = self.app.store.list_tasks()
+        attention = [x for x in tasks if x.status.value in ("等待回复", "待审批", "失败") and x.id != self.task_id]
+        return {"任务数": dict(Counter(x.status.value for x in tasks)),
+                "需要负责人处理": [{"任务": x.id, "标题": x.title, "状态": x.status.value, "在等": x.waiting or x.blocker}
+                              for x in attention[:15]],
+                "新线索": len(self.app.store.list_leads("新")), "雷达": self._radar_list({})["规则"],
+                "任务服务": "运行中" if self._serve_alive() else "没在运行（雷达不会按时跑，排队的任务不会执行）"}
+
+    def _serve_alive(self) -> bool:
+        from .radar import serve_alive
+        return serve_alive(self.app.store)
+
+    def _lead_list(self, a):
+        leads = self.app.store.list_leads(a.get("status") or None, limit=30)
+        return [{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in l.items()
+                 if k in ("id", "rule", "region", "platform", "title", "direction", "evidence", "suggestion", "status",
+                          "reason", "selection_task_id", "created_at")} for l in leads]
+
+    def _lead_set_status(self, a):
+        lead = self.app.store.update_lead(a["lead_id"], a["status"], a.get("reason", ""))
+        self.app.store.audit("lead", a["lead_id"], f"status:{lead['status']}", "agent", {"task": self.task_id})
+        return {"lead_id": lead["id"], "status": lead["status"]}
+
+    def _lead_convert(self, a):
+        from .radar import convert_lead
+        r = convert_lead(self.app, a["lead_id"], WORKSPACES_DIR)
+        return {"task_id": r["task_id"], "说明": r["note"]}
+
+    def _radar_list(self, a):
+        from .radar import describe_schedule, load_rules, next_run
+        rules, errors = load_rules(self.memory.all())
+        out = []
+        for r in rules:
+            nxt = next_run(r, self.app.store) if r.enabled else None
+            last = self.app.store.last_radar_run(r.name)
+            out.append({"名称": r.name, "什么时候跑": f"{describe_schedule(r.schedule)}（{r.timezone}）", "国家": r.regions,
+                        "盯": r.watch, "修饰词": r.modifiers, "启用": r.enabled,
+                        "下次运行": nxt.astimezone(r.tz).strftime("%m-%d %H:%M") if nxt else None,
+                        "上次": f"{last['status']}：{last['note']}" if last else "还没运行过"})
+        return {"规则": out, "写错没生效的": errors}
+
+    def _holiday_calendar(self, a):
+        from datetime import date
+        from .research import upcoming_holidays
+        weeks = max(1, min(int(a.get("weeks") or 26), 60))
+        items = upcoming_holidays(str(a["region"]).upper(), date.today(), weeks)
+        return {"国家": str(a["region"]).upper(), "未来几周": weeks,
+                "节日": [{k: h[k] for k in ("name", "date", "days_left")} for h in items],
+                "说明": "名称带「近似」的以官方公布为准"}
+
+    def _radar_trigger(self, a):
+        from .radar import load_rules, request_trigger
+        names = [r.name for r in load_rules(self.memory.all())[0]]
+        if a["name"] not in names:
+            raise KeyError(f"没有雷达规则《{a['name']}》，现有：{'、'.join(names) or '无'}")
+        request_trigger(self.app.store, a["name"])
+        return {"ok": True, "说明": "已排上，一分钟内执行" if self._serve_alive() else "已排上，但任务服务没在运行"}
+
+    def _radar_rule_propose(self, a):
+        from .radar import describe_schedule, parse_radar, render_rule
+        regions = [str(x).upper() for x in a.get("regions") or []]
+        text = render_rule(a["name"], a["schedule"], a.get("timezone") or "Asia/Shanghai", regions, a.get("watch") or [],
+                           a.get("platform") or "", a.get("modifiers") or [], int(a.get("max_leads") or 3),
+                           a.get("expires_at") or "", a.get("note") or "")
+        parse_radar(a["name"], text)  # 先校验，写错了当场报给 agent 改
+        desc = (f"选品雷达规则：{describe_schedule(a['schedule'])}盯{'、'.join(regions)}的{'、'.join((a.get('watch') or [])[:3])}"
+                "，有新方向、节日窗口、痛点词就出线索")[:120]
+        draft_id = self.memory.propose({"mode": "create", "name": a["name"], "description": desc, "type": "radar",
+                                        "body": text, "why": "负责人在对话里要求新建雷达规则",
+                                        "evidence": "负责人原话"}, task_id=self.task_id)
+        return {"draft_id": draft_id, "什么时候跑": f"{describe_schedule(a['schedule'])}（{a.get('timezone') or 'Asia/Shanghai'}）",
+                "说明": "规则已生成草稿，负责人在对话框里点「采纳」才会生效。把什么时候跑、盯哪些词用一两句话复述给他确认"}
+
+    def _radar_lead_submit(self, a):
+        if a.get("snapshot_id") and not self.app.store.get_research_snapshot(a["snapshot_id"]):
+            raise ValueError(f"快照 {a['snapshot_id']} 不存在：依据要来自真实的调研快照")
+        lead_id = self.app.store.add_lead({**{k: str(a.get(k) or "").strip() for k in
+                                            ("rule", "platform", "title", "direction", "evidence", "suggestion", "snapshot_id")},
+                                         "region": str(a["region"]).upper(), "task_id": self.task_id})
+        self.app.store.audit("lead", lead_id, "submitted", "agent", {"task": self.task_id})
+        return {"lead_id": lead_id, "说明": "已进线索池，负责人会在控制台或飞书里处理"}
+
     def _cs(self, shop_key: str, language: str):
         from .cs import profile_for
         return profile_for(self.app.settings.customer_service, shop_key, language or "en")
@@ -459,6 +689,24 @@ class ToolServer:
         self.app.store.audit("task", self.task_id, "outbound_notify", "agent", {"chat": task.origin_chat_id})
         return {"ok": True, "message_id": msg_id}
 
+    def _note_context(self, name: str, a: dict[str, Any]) -> None:
+        """工具调用成功后，把认出来的店铺和场景回填到任务上。只是展示和统计用的，出错不影响工具结果。"""
+        shop_key = str(a.get("shop_key") or "").strip() if name in SHOP_KEY_TOOLS else ""
+        if ":" not in shop_key or shop_key.startswith("platform:"):
+            shop_key = ""
+        if name == "load_sop":
+            scene = SCENE_BY_SOP.get(str(a.get("name") or ""), "")
+        elif name == "submit_proposal":
+            scene = SCENE_BY_ACTION.get(str(a.get("action") or ""), "")
+        else:
+            scene = next((s for prefix, s in SCENE_BY_TOOL_PREFIX.items() if name.startswith(prefix)), "")
+        if not (shop_key or scene):
+            return
+        try:
+            self.app.tasks.fill_context(self.task_id, shop_key=shop_key, scene=scene)
+        except Exception as e:  # noqa: BLE001 —— 回填失败不能让 agent 以为工具调用失败了
+            print(f"回填任务店铺/场景失败：{e}", file=sys.stderr)
+
     # ---- MCP 协议 ----
     def list_tools(self) -> list[dict[str, Any]]:
         return [{"name": t.name, "description": t.description, "inputSchema": t.schema} for t in self.tools.values()]
@@ -472,6 +720,7 @@ class ToolServer:
         except (AdapterError, ProposalRejected, BrowserError, PlatformError, FeishuError, StagingError, DesktopError,
                 KeyError, ValueError) as e:
             return f"{type(e).__name__}: {e}", True
+        self._note_context(name, arguments or {})
         self.app.tasks.heartbeat(self.task_id)
         return (result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)), False
 
@@ -529,7 +778,8 @@ def tool_names(desktop: bool = False) -> list[str]:
     """供运行时设置允许的工具清单。desktop：开了 AppleScript 操作电脑时加上原生窗口取证工具。"""
     return (DESKTOP_TOOLS if desktop else []) + ["miaoshou_list_shops", "miaoshou_search_collect_box", "miaoshou_get_collect_item",
             "miaoshou_tiktok_category_tree", "miaoshou_tiktok_category_metadata", "price_skus",
-            "check_compliance", "cs_profile", "cs_check_reply", "cs_submit_draft", "cs_mark_sent", "staging_collect", "staging_get_common", "staging_edit_common",
+            "check_compliance", "cs_profile", "cs_check_reply", "cs_submit_draft", "cs_mark_sent", "selection_playbook", "selection_discover", "selection_research", "selection_score", "radar_lead_submit", "workspace_overview", "lead_list", "lead_set_status", "lead_convert",
+            "radar_list", "holiday_calendar", "radar_trigger", "radar_rule_propose", "staging_collect", "staging_get_common", "staging_edit_common",
             "staging_claim_to_tiktok", "staging_claim_to_shop", "staging_get_listing", "staging_edit_listing",
             "feishu_context", "feishu_chat_history", "feishu_thread", "feishu_search",
             "get_shop_context", "load_sop", "capture_page", "platform_list", "platform_open",

@@ -42,6 +42,33 @@ dialog{color:var(--text);background:var(--column-bg);border:1px solid var(--dial
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 #csProfiles textarea,#csDrafts textarea{min-height:0;height:auto}
 body.readonly #cspForm .row button{display:none!important}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+.sp-field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted,#667)}
+.sp-auto{border:1px dashed var(--line);border-radius:8px;padding:10px 12px;margin:8px 0}.sp-auto-head{font-size:12px;font-weight:600;margin-bottom:4px}
+.sp-src{color:var(--muted);font-size:11px;line-height:1.4}.sp-label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.sp-state{font-size:11px}.sp-state .tag{margin-right:6px}.sp-state a{cursor:pointer;text-decoration:underline}
+@media (max-width:640px){.grid2{grid-template-columns:1fr}}
+.section-line{display:flex;align-items:center;gap:8px;margin:16px 0 8px}
+.sp-field textarea{min-height:0;height:84px;resize:vertical}
+#askBtn{position:fixed;right:20px;bottom:20px;z-index:90;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:9px 16px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.12);cursor:pointer;display:flex;gap:6px;align-items:center}
+#askBtn:hover{background:var(--raised)}.ask-spark{color:var(--accent)}
+#askPanel{position:fixed;right:20px;bottom:20px;z-index:95;width:440px;max-width:calc(100vw - 32px);height:620px;max-height:calc(100vh - 40px);background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column}
+#askPanel.big{width:calc(100vw - 40px)!important;height:calc(100vh - 40px)!important}
+.ask-resize{position:absolute;z-index:3}.ask-resize.l{left:-4px;top:12px;bottom:12px;width:8px;cursor:ew-resize}.ask-resize.t{top:-4px;left:12px;right:12px;height:8px;cursor:ns-resize}.ask-resize.tl{left:-5px;top:-5px;width:16px;height:16px;cursor:nwse-resize}#askPanel.big .ask-resize{display:none}body.ask-resizing{user-select:none;cursor:nwse-resize}.ask-head{cursor:default}
+.ask-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line)}.ask-title-wrap{position:relative}
+.ask-title{border:0;background:none;color:var(--text);font-weight:600;font-size:13px;cursor:pointer;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#askHistory{position:absolute;top:30px;left:0;width:300px;max-height:360px;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.15);padding:6px;z-index:2}
+#askHistory .h-item{display:flex;gap:8px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:12px}#askHistory .h-item:hover{background:var(--raised)}
+#askHistory .h-item span:first-child{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#askBody{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.ask-msg{max-width:88%;padding:9px 12px;border-radius:10px;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.ask-msg.user{align-self:flex-end;background:var(--accent-weak);color:var(--text)}.ask-msg.assistant{align-self:flex-start;background:var(--raised)}
+.ask-msg p{margin:0 0 6px}.ask-msg ul{margin:0 0 6px;padding-left:18px}.ask-msg code{font-size:12px;background:var(--button-bg);padding:0 4px;border-radius:3px}
+.ask-msg pre{font-size:11px;overflow:auto;background:var(--button-bg);padding:6px;border-radius:6px;margin:0 0 6px}
+.ask-empty{margin:auto;text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center}.ask-empty .btn{width:280px}
+.ask-draft{border:1px dashed var(--accent);border-radius:8px;padding:8px 10px;font-size:12px;align-self:stretch}
+.ask-foot{border-top:1px solid var(--line);padding:8px 10px}#askPanel #askInput{width:100%;resize:none;min-height:0;height:58px}#askPanel #askRuntime{width:auto;flex:none}
+.board-column.drop-ok{outline:2px dashed var(--accent);outline-offset:-2px}.task-card[draggable=true]{cursor:grab}.task-card.dragging{opacity:.45}.drop-line{height:3px;border-radius:2px;background:var(--accent);margin:-4px 2px}
+.detail-chat{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow:auto;margin-bottom:10px;white-space:normal}#detailReply{width:100%;min-height:0;height:70px;resize:vertical;margin-top:6px}
 </style>
 </head>
 <body>
@@ -63,6 +90,8 @@ body.readonly #cspForm .row button{display:none!important}
     <button data-tab="tasks" data-filter="active"><span data-icon="bot"></span>智能体在做<span class="count" id="activeTasks">—</span></button>
     <button data-tab="tasks" data-filter="attention"><span data-icon="inbox"></span>需要我处理<span class="count" id="attentionTasks">—</span></button>
     <button data-tab="listings"><span data-icon="box"></span>Listing 对比</button>
+    <div class="nav-label">选品</div>
+    <button data-tab="radar"><span data-icon="search"></span>选品雷达<span id="leadCount" class="badge" hidden></span></button>
     <div class="nav-label">客户服务</div>
     <button data-tab="csDrafts"><span data-icon="inbox"></span>客服草稿</button>
     <button data-tab="csProfiles"><span data-icon="edit"></span>客服话术</button>
@@ -128,6 +157,36 @@ body.readonly #cspForm .row button{display:none!important}
             <button type="submit" class="btn primary">保存</button>
           </div>
         </form>
+        <div id="selPreview" hidden style="margin-top:16px">
+          <h3 style="margin:0 0 4px">试算</h3>
+          <p class="hint">填一个样例商品，看会匹配哪份剧本、卡在哪条门槛、打几分。标「自动」的已经替你取好了，都可以改；改过的标「手动」，点「恢复」回到自动值。只算不存。</p>
+          <div class="grid2">
+            <label class="sp-field">国家<select id="spRegion"></select></label>
+            <label class="sp-field">平台<select id="spPlatform"></select></label>
+            <label class="sp-field">商品名<input id="spName" placeholder="如 加热眼罩"></label>
+            <label class="sp-field">类目<input id="spCategory" placeholder="如 个护（用来对照排除类目）"></label>
+            <label class="sp-field">当地售价（美元）<input id="spPrice" type="number" min="0" step="0.01" placeholder="竞品在平台上的售价"></label>
+            <label class="sp-field">货源价（人民币）<input id="spSource" type="number" min="0" step="0.01" placeholder="1688 等货源价"></label>
+            <label class="sp-field">重量（kg）<input id="spWeight" type="number" min="0" step="0.01" placeholder="填了会自动估运费"></label>
+            <label class="sp-field">竞争度 0~100（越高越卷）<input id="spComp" type="number" min="0" max="100" placeholder="暂时手填：在售卖家多、评价多就给高分"></label>
+          </div>
+          <div class="sp-auto">
+            <div class="sp-auto-head">自动取数</div>
+            <div class="grid2">
+              <div class="sp-field"><span class="sp-label">汇率（人民币→美元）<span class="sp-state" data-for="spFx"></span></span><input id="spFx" type="number" min="0" step="0.0001"><small class="sp-src" id="spFxSrc"></small></div>
+              <div class="sp-field"><span class="sp-label">佣金率<span class="sp-state" data-for="spComm"></span></span><input id="spComm" type="number" min="0" step="0.01"><small class="sp-src" id="spCommSrc"></small></div>
+              <div class="sp-field"><span class="sp-label">运费（美元）<span class="sp-state" data-for="spShip"></span></span><input id="spShip" type="number" min="0" step="0.01"><small class="sp-src" id="spShipSrc"></small></div>
+              <div class="sp-field"><span class="sp-label">需求热度 0~100<span class="sp-state" data-for="spDemand"></span></span><input id="spDemand" type="number" min="0" max="100"><small class="sp-src" id="spDemandSrc"></small></div>
+            </div>
+            <div class="row" style="gap:8px;align-items:flex-end">
+              <label class="sp-field" style="flex:1">搜索词（估需求热度用，默认用商品名；英文市场填英文）<input id="spKeyword" placeholder="如 heated eye mask"></label>
+              <button type="button" class="btn owner-only" id="spResearch" title="按剧本的数据源调研一次，并把搜索词也查一遍。会访问 Google 等公开接口">现在调研</button>
+            </div>
+            <small class="sp-src" id="spMatches"></small>
+          </div>
+          <div class="row"><span class="spacer"></span><button type="button" class="btn primary" id="spRun">试算</button></div>
+          <div id="spResult"></div>
+        </div>
         <details style="margin-top:16px" id="memHistoryBox">
           <summary class="meta">版本历史（每次保存、采纳草稿、回滚、导入前自动留一份，每条最多 20 份）</summary>
           <div id="memHistory" style="margin-top:8px"></div>
@@ -199,6 +258,66 @@ body.readonly #cspForm .row button{display:none!important}
     <p class="hint">以 settings.toml 里填的路径为准，留空则自动查找；运行 --version 验证。底座要「验证通过」且「适配器已实现」才能调度。</p>
     <div class="card"><table><thead><tr><th>底座</th><th>路径</th><th>状态</th><th>版本 / 错误</th></tr></thead>
       <tbody id="runtimeRows"></tbody></table></div>
+  </section>
+
+  <section id="radar" hidden>
+    <p class="hint">雷达按你定的时间去看市场（下拉词、节日），代码先比对；没有新动静就安静记一笔，有信号才叫分身分析，写成线索放进线索池。规则存在记忆库里，类型是「雷达规则」。</p>
+    <div id="radarServe"></div>
+    <div class="card owner-only" id="discoverCard">
+      <h3 style="margin:0 0 4px">找方向</h3>
+      <p class="hint" style="margin:0 0 8px">还不知道做什么品？选个国家，扫一遍常见的不带电品类，代码按需求宽度、能细分、痛点、节日打分排序。看中的方向点「盯住」，建成雷达每天帮你看。要几十秒。</p>
+      <div class="grid2">
+        <label class="sp-field">国家<select id="dcRegion">
+          <option value="US">美国</option><option value="GB">英国</option><option value="DE">德国</option><option value="FR">法国</option>
+          <option value="SA">沙特</option><option value="AE">阿联酋</option><option value="ID">印尼</option><option value="TH">泰国</option>
+          <option value="MY">马来西亚</option><option value="PH">菲律宾</option><option value="VN">越南</option><option value="CA">加拿大</option></select></label>
+        <label class="sp-field">平台（可空）<input id="dcPlatform" placeholder="如 tiktok、amazon"></label>
+        <label class="sp-field">不想做的（逗号分隔）<input id="dcExclude" placeholder="如 儿童、床品"></label>
+        <label class="sp-field">想看的品类（可空，逗号分隔）<input id="dcFocus" placeholder="如 pet bed, garden decor"></label>
+      </div>
+      <div class="row"><span class="spacer"></span><button class="btn primary" type="button" id="dcRun">开始找方向</button></div>
+      <div id="dcResult"></div>
+    </div>
+    <div class="section-line"><h3 style="margin:0">雷达规则</h3><span class="spacer"></span><button class="btn owner-only" id="radarNewBtn" type="button">+ 新建雷达</button></div>
+    <div id="radarRules"></div>
+    <div class="card" id="radarNew" hidden style="margin-top:12px">
+      <h3 style="margin:0 0 8px">新建雷达</h3>
+      <div class="grid2">
+        <label class="sp-field">名称<input id="rnName" placeholder="如 雷达-沙特斋月"></label>
+        <label class="sp-field">国家（两位代码，逗号分隔）<input id="rnRegions" placeholder="如 SA, AE"></label>
+        <label class="sp-field">盯的品类词（一行一个，最多 10 个）<textarea id="rnWatch" rows="3" placeholder="prayer mat&#10;ramadan decor"></textarea></label>
+        <label class="sp-field">修饰词（一行一个，和品类词组合着查，挖细分方向）<textarea id="rnMods" rows="3" placeholder="for kids&#10;portable&#10;gift"></textarea></label>
+        <label class="sp-field">平台（可空）<input id="rnPlatform" placeholder="如 noon、amazon、tiktok"></label>
+        <label class="sp-field">每次最多出几条线索<input id="rnMax" type="number" min="1" max="10" value="3"></label>
+      </div>
+      <div class="sp-auto">
+        <div class="sp-auto-head">什么时候跑</div>
+        <div class="grid2">
+          <label class="sp-field">频率<select id="rnFreq">
+            <option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option>
+            <option value="hourly">每隔几小时</option><option value="custom">自定义（cron 表达式）</option></select></label>
+          <label class="sp-field">时区<select id="rnTz">
+            <option value="Asia/Shanghai">北京时间</option><option value="America/Los_Angeles">美西</option>
+            <option value="America/New_York">美东</option><option value="Europe/London">英国</option>
+            <option value="Europe/Berlin">中欧（德法意西）</option><option value="Asia/Riyadh">沙特</option>
+            <option value="Asia/Dubai">阿联酋</option><option value="Asia/Jakarta">印尼</option><option value="Asia/Bangkok">泰国</option></select></label>
+          <label class="sp-field" id="rnTimeBox">时间<input id="rnTime" type="time" value="09:00"></label>
+          <div class="sp-field" id="rnDowBox" hidden>星期几<div class="row" style="gap:6px;margin:0" id="rnDow"></div></div>
+          <label class="sp-field" id="rnDomBox" hidden>每月几号<input id="rnDom" type="number" min="1" max="28" value="1"></label>
+          <label class="sp-field" id="rnEveryBox" hidden>每隔几小时<select id="rnEvery"><option>2</option><option>3</option><option>4</option><option selected>6</option><option>8</option><option>12</option></select></label>
+          <label class="sp-field" id="rnCronBox" hidden>cron 表达式（分 时 日 月 周）<input id="rnCron" placeholder="0 9 * * 1-5"></label>
+          <label class="sp-field">到期日（可空，过了就不再跑）<input id="rnExpires" type="date"></label>
+        </div>
+        <small class="sp-src" id="rnPreview"></small>
+      </div>
+      <label class="sp-field">关注说明（写给分身：重点看什么，什么样的不用报）<textarea id="rnNote" rows="3" placeholder="重点看儿童款、便携款；品牌词、型号词不用报"></textarea></label>
+      <div class="row"><span class="spacer"></span><button class="btn" type="button" id="rnCancel">取消</button><button class="btn primary" type="button" id="rnSave">保存并启用</button></div>
+    </div>
+    <div class="section-line" style="margin-top:20px"><h3 style="margin:0;white-space:nowrap">线索池</h3><span class="spacer"></span>
+      <select id="leadStatus" style="width:auto"><option value="">全部</option><option value="新" selected>新</option><option value="在看">在看</option><option value="已转选品">已转选品</option><option value="放弃">放弃</option></select></div>
+    <div id="radarLeads"></div>
+    <h3>最近运行</h3>
+    <div class="card"><table><thead><tr><th>时间</th><th>规则</th><th>触发</th><th>结果</th><th>说明</th><th>任务</th></tr></thead><tbody id="radarRuns"></tbody></table></div>
   </section>
 
   <section id="listings" hidden>
@@ -288,10 +407,36 @@ body.readonly #cspForm .row button{display:none!important}
 <dialog id="taskDialog" aria-labelledby="detailTitle"><div class="dialog-head"><span class="meta" id="detailId">任务详情</span><button class="icon-btn" data-close="taskDialog" aria-label="关闭任务详情"><span data-icon="close"></span></button></div><div class="dialog-body" id="taskDetail"></div></dialog>
 <dialog id="helpDialog" aria-labelledby="helpTitle"><div class="dialog-head"><span id="helpTitle">交办一个新任务</span><button class="icon-btn" data-close="helpDialog" aria-label="关闭交办说明"><span data-icon="close"></span></button></div><div class="dialog-body"><h2>在飞书里，把任务交给分身。</h2><p class="hint">私聊机器人，描述目标、店铺和完成标准。服务接收消息后，任务会出现在这个工作区。</p><div class="instruction"><small>可以这样开始</small>检查这批采集箱商品的标题和 SKU，整理发布前需要确认的问题。</div><p class="meta">继续已有任务时，在飞书引用原消息回复。审批仍在飞书完成。</p><button class="btn primary" id="copyExample">复制示例</button></div></dialog>
 <div id="toast"></div>
+<button id="askBtn" type="button" aria-label="问分身"><span class="ask-spark">✳</span>问分身</button>
+<div id="askPanel" hidden role="dialog" aria-label="问分身">
+  <div class="ask-resize l" data-edge="l" title="拖动调整宽度"></div>
+  <div class="ask-resize t" data-edge="t" title="拖动调整高度"></div>
+  <div class="ask-resize tl" data-edge="tl" title="拖动调整大小"></div>
+  <div class="ask-head">
+    <button class="icon-btn" id="askNew" type="button" title="新对话" aria-label="新对话">＋</button>
+    <div class="ask-title-wrap">
+      <button type="button" id="askTitle" class="ask-title">新对话 ▾</button>
+      <div id="askHistory" hidden></div>
+    </div>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="askExpand" type="button" title="放大" aria-label="放大">⤢</button>
+    <button class="icon-btn" id="askClose" type="button" title="关闭" aria-label="关闭">✕</button>
+  </div>
+  <div id="askServe"></div>
+  <div id="askBody"></div>
+  <div class="ask-foot">
+    <textarea id="askInput" rows="2" placeholder="给分身发消息…（回车发送，Shift+回车换行）"></textarea>
+    <div class="row" style="margin:6px 0 0;gap:8px">
+      <select id="askRuntime" title="用哪个底座回答（新对话可选，之后不变）"></select>
+      <span class="meta" id="askState"></span><span class="spacer"></span>
+      <button class="btn primary" id="askSend" type="button">发送</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const TYPE_LABELS = { experience: "经验", calendar: "日历", fact: "事实", preference: "偏好" };
+const TYPE_LABELS = { experience: "经验", calendar: "日历", fact: "事实", preference: "偏好", selection: "选品剧本", radar: "雷达规则" };
 const ACTION_LABELS = { created: "新建", updated: "修改", deleted: "删除", approved: "采纳", rejected: "驳回" };
 let memories = [], types = [], current = null;
 
@@ -352,7 +497,7 @@ function selectMemory(m) {
   current = m;
   $("mName").value = m.name; $("mDesc").value = m.description; $("mBody").value = m.body;
   if (![...$("mType").options].some((o) => o.value === m.type)) $("mType").append(el("option", { value: m.type }, m.type));
-  $("mType").value = m.type;
+  $("mType").value = m.type; toggleSelPreview();
   const rel = [m.links.length ? `链向《${m.links.join("》《")}》` : "", m.linked_by.length ? `被《${m.linked_by.join("》《")}》链着` : ""]
     .filter(Boolean).join("；");
   $("mInfo").textContent = `文件 ${m.slug}.md · 更新于 ${fmtTime(m.updated_at)}` + (rel ? ` · ${rel}` : "");
@@ -376,9 +521,121 @@ async function loadHistory(m) {
     : [el("div", { class: "empty" }, "还没有历史版本（第一次修改之后才有）")]));
 }
 
+// 选品剧本：类型选成 selection 时显示试算
+const money = (x) => Number(x).toFixed(2);
+const AUTO_FIELDS = { spFx: "exchange_rate", spComm: "commission_rate", spShip: "shipping", spDemand: "demand" };
+const autoValues = {};          // 最近一次自动取到的值
+const manual = new Set();       // 人手改过的字段，自动刷新时不覆盖
+let defaultsTimer = null;
+
+function toggleSelPreview() {
+  const on = $("mType").value === "selection";
+  $("selPreview").hidden = !on;
+  if (on && current) { manual.clear(); loadSelOptions(); }
+}
+$("mType").addEventListener("change", toggleSelPreview);
+
+// 数字框：滚轮不改值（以前滚一下就把货源价改成了负数），不收负数
+document.querySelectorAll('#selPreview input[type=number]').forEach((i) => {
+  i.addEventListener("wheel", () => i.blur(), { passive: true });
+});
+
+function setState(id) {
+  const box = document.querySelector(`.sp-state[data-for="${id}"]`);
+  const auto = autoValues[id];
+  if (manual.has(id)) {
+    box.replaceChildren(el("span", { class: "tag" }, "手动"),
+      auto != null ? el("a", { onclick: () => { manual.delete(id); $(id).value = auto; setState(id); } }, `恢复自动值 ${auto}`) : "");
+  } else {
+    box.replaceChildren(auto != null ? el("span", { class: "tag", style: "color:var(--ok)" }, "自动") : el("span", { class: "tag" }, "需手填"));
+  }
+}
+Object.keys(AUTO_FIELDS).forEach((id) => $(id).addEventListener("input", () => { manual.add(id); setState(id); }));
+
+function fillOptions(sel, values, keep, emptyLabel) {
+  const opts = values.length ? values : [];
+  sel.replaceChildren(...(emptyLabel ? [el("option", { value: "" }, emptyLabel)] : []),
+    ...opts.map((v) => el("option", { value: v }, v)));
+  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
+}
+
+async function loadSelOptions() {
+  const d = await api("GET", `/api/selection-defaults?slug=${encodeURIComponent(current.slug)}`).catch(() => null);
+  const o = d?.options || { regions: [], platforms: [] };
+  // 兜底剧本（regions 含 *）：列常见国家让人选
+  const regions = o.regions.includes("*") ? ["US", "GB", "DE", "FR", "SA", "AE", "ID", "TH", "MY", "VN", "PH", "JP", "CA", "AU"] : o.regions;
+  fillOptions($("spRegion"), regions, $("spRegion").value);
+  fillOptions($("spPlatform"), o.platforms, $("spPlatform").value, o.platforms.length ? "" : "（不限平台）");
+  if (o.platforms.length && !$("spPlatform").value) $("spPlatform").value = o.platforms[0];
+  refreshDefaults();
+}
+
+function scheduleDefaults() { clearTimeout(defaultsTimer); defaultsTimer = setTimeout(refreshDefaults, 350); }
+["spRegion", "spPlatform"].forEach((id) => $(id).addEventListener("change", refreshDefaults));
+["spWeight", "spKeyword", "spName"].forEach((id) => $(id).addEventListener("input", scheduleDefaults));
+
+async function refreshDefaults() {
+  const keyword = $("spKeyword").value.trim() || $("spName").value.trim();
+  const q = new URLSearchParams({ slug: current?.slug || "", region: $("spRegion").value, platform: $("spPlatform").value,
+    weight: $("spWeight").value, keyword });
+  let d;
+  try { d = await api("GET", `/api/selection-defaults?${q}`); } catch (e) { return; }
+  if (!d.exchange_rate) return;
+  const src = { spFx: d.exchange_rate, spComm: d.commission_rate, spShip: d.shipping, spDemand: d.demand };
+  for (const [id, info] of Object.entries(src)) {
+    autoValues[id] = info.value;
+    if (!manual.has(id)) $(id).value = info.value ?? "";
+    $(id + "Src").textContent = info.source || "";
+    setState(id);
+  }
+  const dm = d.demand;
+  $("spResearch").textContent = dm.stale ? `现在调研 ${d.region}` : `重新调研 ${d.region}`;
+  $("spDemandSrc").textContent = dm.snapshot
+    ? `${dm.source}${dm.stale ? `（快照已 ${dm.age_days} 天，超过剧本要求，建议重新调研）` : ""}`
+    : `还没有 ${d.region} 的调研，点「现在调研」`;
+  $("spMatches").textContent = dm.matches?.length ? `匹配到的下拉词：${dm.matches.slice(0, 12).join("、")}${dm.matches.length > 12 ? " …" : ""}` : "";
+}
+
+$("spResearch").onclick = async () => {
+  const keyword = $("spKeyword").value.trim() || $("spName").value.trim();
+  $("spResearch").disabled = true; $("spResearch").textContent = "调研中…（要十几秒）";
+  try {
+    const r = await api("POST", "/api/selection-research", { region: $("spRegion").value, platform: $("spPlatform").value, keyword });
+    const failed = Object.entries(r.sources).filter(([, s]) => s === "failed").map(([k]) => k);
+    toast(`调研完成 ${r.id}` + (failed.length ? `，取数失败：${failed.join("、")}` : ""), failed.length > 0);
+    manual.delete("spDemand");
+  } finally { $("spResearch").disabled = false; }
+  await refreshDefaults();
+};
+
+$("spRun").onclick = async () => {
+  const num = (id) => ($(id).value.trim() === "" ? undefined : Number($(id).value));
+  const candidate = { name: $("spName").value.trim(), category: $("spCategory").value.trim(), price: num("spPrice"),
+    source_price: num("spSource"), exchange_rate: num("spFx"), shipping: num("spShip"), commission_rate: num("spComm"),
+    weight_kg: num("spWeight"), demand: num("spDemand"), competition: num("spComp") };
+  const d = await api("POST", "/api/selection-preview", { region: $("spRegion").value, platform: $("spPlatform").value, candidate });
+  const r = d.result, m = r.margin || {};
+  const factors = { demand: "需求", margin: "毛利", competition: "竞争", logistics: "物流" };
+  $("spResult").replaceChildren(el("div", { class: "card", style: "margin-top:8px" },
+    el("p", {}, `用的剧本：${d.playbook}（版本 ${d.version}）· 总分 ${r.score} · `,
+      r.passed ? el("span", { style: "color:var(--ok)" }, "通过门槛") : el("span", { style: "color:var(--danger)" }, "没通过门槛")),
+    m.price ? el("p", { class: "meta" }, `售价 ${money(m.price)} · 落地成本 ${money(m.landed_cost)} · 佣金等 ${money(m.fees)}` +
+      (m.return_rate ? ` · 退货 ${(m.return_rate * 100).toFixed(0)}% 影响 -${money(m.return_cost)}` : "") +
+      ` · 预期利润 ${money(m.profit)} · 毛利率 ${(m.margin_rate * 100).toFixed(1)}%（底线 ${(r.min_margin * 100).toFixed(0)}%）`) : "",
+    r.scores ? el("p", { class: "meta" }, Object.entries(r.scores).map(([k, v]) => `${factors[k] || k} ${v}`).join(" · ")) : "",
+    r.missing && r.missing.length ? el("p", { class: "meta" }, `没填：${r.missing.map((k) => factors[k] || k).join("、")}（按 0 分算）`) : "",
+    r.reasons.length ? el("ul", {}, ...r.reasons.map((x) => el("li", { style: "color:var(--danger)" }, x))) : ""),
+    el("div", { class: "card", style: "margin-top:8px" }, el("h3", { style: "margin:0 0 6px" }, "这份剧本最近的调研"),
+      ...(d.snapshots && d.snapshots.length ? d.snapshots.map((s) => el("p", { class: "meta" },
+        `${s.id} · ${s.region} · ${fmtTime(s.created_at)} · ` +
+        Object.entries(s.sources).map(([k, v]) => `${k} ${v}`).join("，") +
+        (s.new_terms.length ? ` · 新词：${s.new_terms.join("、")}` : ""))) :
+        [el("p", { class: "meta" }, "还没有调研过。点上面的「现在调研」，或让分身选品时自动调研")])));
+};
+
 function newMemory() {
   current = null;
-  $("memForm").reset(); $("mType").value = "experience";
+  $("memForm").reset(); $("mType").value = "experience"; toggleSelPreview();
   $("mInfo").textContent = "新建记忆"; $("delMem").disabled = true;
   renderMemList(); $("mName").focus();
 }
@@ -708,8 +965,135 @@ $("cspPreview").onclick = async () => {
       el("ul", {}, ...r.problems.map((x) => el("li", { style: "color:var(--danger)" }, x)))));
 };
 
+// 店铺和场景都有就一起显示；场景还是「待定」时只在什么都没有的时候才显示它
+function shopScene(t) {
+  const scene = t.scene && t.scene !== "待定" ? t.scene : "";
+  return [t.shop_key, scene].filter(Boolean).join(" · ") || t.scene || "";
+}
+
+// ---- 选品雷达 ----
+const DOW = ["日", "一", "二", "三", "四", "五", "六"];
+$("rnDow").replaceChildren(...DOW.map((d, i) => el("label", { class: "tag", style: "cursor:pointer" },
+  el("input", { type: "checkbox", value: String(i), ...(i === 1 ? { checked: "" } : {}) }), " 周" + d)));
+function radarCron() {
+  const [h, m] = ($("rnTime").value || "09:00").split(":").map(Number);
+  const f = $("rnFreq").value;
+  if (f === "daily") return `${m} ${h} * * *`;
+  if (f === "weekly") {
+    const days = [...$("rnDow").querySelectorAll("input:checked")].map((i) => i.value);
+    return `${m} ${h} * * ${days.length ? days.join(",") : "1"}`;
+  }
+  if (f === "monthly") return `${m} ${h} ${Number($("rnDom").value) || 1} * *`;
+  if (f === "hourly") return `0 */${$("rnEvery").value} * * *`;
+  return $("rnCron").value.trim();
+}
+function radarFormSync() {
+  const f = $("rnFreq").value;
+  $("rnTimeBox").hidden = f === "hourly" || f === "custom";
+  $("rnDowBox").hidden = f !== "weekly"; $("rnDomBox").hidden = f !== "monthly";
+  $("rnEveryBox").hidden = f !== "hourly"; $("rnCronBox").hidden = f !== "custom";
+  const tz = $("rnTz").selectedOptions[0]?.textContent || "";
+  $("rnPreview").textContent = `会生成：${radarCron() || "（还没填）"}　按${tz}时间。保存后在规则列表里能看到下次运行时间。`;
+}
+["rnFreq", "rnTime", "rnDom", "rnEvery", "rnCron", "rnTz"].forEach((id) => $(id).addEventListener("input", radarFormSync));
+$("rnDow").addEventListener("change", radarFormSync);
+$("radarNewBtn").onclick = () => { $("radarNew").hidden = false; radarFormSync(); $("rnName").focus(); };
+$("rnCancel").onclick = () => { $("radarNew").hidden = true; };
+const lines = (id) => $(id).value.split(/\n|,|，/).map((s) => s.trim()).filter(Boolean);
+$("rnSave").onclick = async () => {
+  await api("POST", "/api/radar", { name: $("rnName").value.trim(), regions: lines("rnRegions"), watch: lines("rnWatch"),
+    modifiers: lines("rnMods"), platform: $("rnPlatform").value.trim(), max_leads: Number($("rnMax").value) || 3,
+    schedule: radarCron(), timezone: $("rnTz").value, expires_at: $("rnExpires").value, note: $("rnNote").value });
+  toast("雷达已保存并启用"); $("radarNew").hidden = true; await loadRadar();
+};
+$("dcRun").onclick = async () => {
+  $("dcRun").disabled = true; $("dcRun").textContent = "扫描中…（几十秒）";
+  try {
+    const r = await api("POST", "/api/selection-discover", { region: $("dcRegion").value, platform: $("dcPlatform").value.trim(),
+      exclude: $("dcExclude").value, focus: $("dcFocus").value });
+    const sub = (x) => Object.entries(x).map(([k, v]) => `${k} ${v}`).join(" · ");
+    $("dcResult").replaceChildren(
+      el("p", { class: "meta" }, `用的剧本：${r.剧本} · 快照 ${r.快照} · ${r.怎么读}`),
+      ...r.说明.map((n) => el("p", { class: "meta", style: "color:var(--warn)" }, n)),
+      ...r.方向.map((d, i) => el("div", { class: "card", style: "margin-top:8px" },
+        el("div", { class: "row", style: "margin:0;gap:8px" }, el("strong", {}, `${i + 1}. ${d.方向}`), el("span", { class: "tag" }, d.品类词),
+          el("span", { class: "tag", style: "color:var(--ok)" }, `总分 ${d.总分}`), el("span", { class: "spacer" }),
+          el("button", { class: "btn", type: "button", onclick: () => radarFromDirection(r.国家, d) }, "盯住")),
+        el("p", { class: "meta" }, sub(d.分项) + ` · 下拉词 ${d.下拉词数} 个` + (d.节日 ? ` · ${d.节日}` : "")),
+        d.细分切入点.length ? el("p", {}, "细分切入点：" + d.细分切入点.join("、")) : "",
+        el("p", { class: "meta" }, "示例下拉词：" + d.示例下拉词.join("、")),
+        d.痛点词.length ? el("p", { class: "meta" }, "痛点词：" + d.痛点词.join("、")) : "",
+        d.提醒 ? el("p", { class: "meta", style: "color:var(--warn)" }, d.提醒) : "",
+        el("p", { class: "meta" }, ...Object.entries(d.核实链接).flatMap(([k, u]) => [el("a", { href: u, target: "_blank", rel: "noopener" }, k), "　"])))),
+      r.排除的.length ? el("p", { class: "meta" }, "排除了：" + r.排除的.map((x) => `${x.品类}（${x.原因}）`).join("、")) : "");
+  } finally { $("dcRun").disabled = false; $("dcRun").textContent = "开始找方向"; }
+};
+function radarFromDirection(region, d) {
+  $("radarNew").hidden = false;
+  $("rnName").value = `雷达-${region}-${d.方向}`.slice(0, 40); $("rnRegions").value = region; $("rnWatch").value = d.品类词;
+  const mods = d.细分切入点.map((w) => (w.match(/\b(for \w+|gift|personalized|set)\b/i) || [""])[0].toLowerCase()).filter(Boolean);
+  $("rnMods").value = [...new Set(mods)].slice(0, 6).join("\n");
+  $("rnNote").value = `从「找方向」来：${d.方向}（${d.品类词}），重点看细分切入点：${d.细分切入点.slice(0, 4).join("、")}`;
+  radarFormSync(); $("radarNew").scrollIntoView({ block: "start" }); $("rnName").focus();
+}
+function openMemory(slug) { navigate("memories").then(() => loadMemories(slug)); }
+
+async function loadRadar() {
+  const d = await api("GET", "/api/radar");
+  $("radarServe").replaceChildren(d.serve_alive ? "" : el("div", { class: "role-banner" },
+    "任务服务没在运行：雷达不会按时跑，「立即运行」「转选品」也要等服务启动后才执行。在配置页点「启动任务服务」，或运行 ecom-twin start。"));
+  $("radarRules").replaceChildren(...(d.rules.length ? d.rules.map((r) => el("div", { class: "card", style: "margin-top:8px" },
+    el("div", { class: "row", style: "margin:0;gap:8px" },
+      el("strong", {}, r.name), el("span", { class: "tag" }, r.enabled ? "运行中" : "已暂停"),
+      r.pending ? el("span", { class: "tag" }, "已排上，等服务执行") : "", el("span", { class: "spacer" }),
+      el("button", { class: "btn owner-only", type: "button", onclick: async () => {
+        const x = await api("POST", `/api/radar/${encodeURIComponent(r.slug)}/trigger`, {}); toast(x.note, !x.serve_alive); loadRadar(); } }, "立即运行"),
+      el("button", { class: "btn owner-only", type: "button", onclick: async () => {
+        await api("POST", `/api/radar/${encodeURIComponent(r.slug)}/toggle`, { enabled: !r.enabled }); loadRadar(); } }, r.enabled ? "暂停" : "启用"),
+      el("button", { class: "btn", type: "button", onclick: () => openMemory(r.slug) }, "编辑")),
+    el("p", { class: "meta" }, `${r.describe}（${r.timezone}）· ${r.regions.join("、")}${r.platform ? " · " + r.platform : ""}` +
+      ` · 盯：${r.watch.join("、")}${r.modifiers.length ? ` × ${r.modifiers.join("、")}` : ""}` +
+      (r.expires_at ? ` · ${r.expires_at} 到期` : "")),
+    el("p", { class: "meta" }, `下次运行：${r.next_run ? `${r.next_run_local}（规则时区），即本机 ${fmtTime(r.next_run)}` : (r.enabled ? "不会再跑（已到期）" : "已暂停")}` +
+      (r.last_run ? ` · 上次：${fmtTime(r.last_run.started_at)} ${r.last_run.status} — ${r.last_run.note}` : " · 还没运行过"))))
+    : [el("div", { class: "empty" }, "还没有雷达规则。点「+ 新建雷达」，或者在「问分身」里说「每天早上 9 点帮我盯沙特的礼拜毯」")]),
+    ...d.errors.map((e) => el("div", { class: "role-banner" }, "规则写错了，没有生效：" + e)));
+  $("radarRuns").replaceChildren(...(d.runs.length ? d.runs.map((x) => el("tr", {},
+    el("td", {}, fmtTime(x.started_at)), el("td", {}, x.rule), el("td", {}, x.trigger),
+    el("td", {}, el("span", { class: "tag" }, x.status)), el("td", {}, x.note), el("td", {}, x.task_id || "—")))
+    : [el("tr", {}, el("td", { colspan: 6, class: "empty" }, "还没有运行记录"))]));
+  await loadLeads();
+}
+$("leadStatus").onchange = () => loadLeads();
+const ABANDON = ["需求太小", "竞争太激烈", "利润不够", "季节性太强", "侵权或合规风险", "不符合店铺定位", "其他"];
+async function loadLeads() {
+  const { leads } = await api("GET", "/api/leads" + ($("leadStatus").value ? `?status=${encodeURIComponent($("leadStatus").value)}` : ""));
+  const act = (l, status, label, extra = {}) => el("button", { class: "btn", type: "button", onclick: async () => {
+    await api("POST", `/api/leads/${l.id}`, { status, ...extra }); loadLeads(); } }, label);
+  $("radarLeads").replaceChildren(...(leads.length ? leads.map((l) => el("div", { class: "card", style: "margin-top:8px" },
+    el("div", { class: "row", style: "margin:0;gap:8px" }, el("strong", {}, `${l.id} · ${l.title}`),
+      el("span", { class: "tag" }, l.status), el("span", { class: "tag" }, l.region + (l.platform ? " · " + l.platform : "")),
+      el("span", { class: "spacer" }), el("span", { class: "meta" }, `${l.rule || "手动"} · ${fmtTime(l.created_at)}`)),
+    l.direction ? el("p", {}, l.direction) : "",
+    el("p", { class: "meta" }, "依据：" + l.evidence), l.suggestion ? el("p", { class: "meta" }, "建议：" + l.suggestion) : "",
+    l.status === "放弃" ? el("p", { class: "meta" }, "放弃原因：" + l.reason) : "",
+    l.selection_task_id ? el("p", { class: "meta" }, "选品任务：" + l.selection_task_id) : "",
+    ["新", "在看"].includes(l.status) ? el("div", { class: "row", style: "gap:8px" }, el("span", { class: "spacer" }),
+      l.status === "新" ? act(l, "在看", "在看") : "",
+      el("select", { id: `ab-${l.id}` }, ...ABANDON.map((x) => el("option", {}, x))),
+      el("button", { class: "btn danger", type: "button", onclick: async () => {
+        await api("POST", `/api/leads/${l.id}`, { status: "放弃", reason: $(`ab-${l.id}`).value }); loadLeads(); } }, "放弃"),
+      el("button", { class: "btn primary", type: "button", onclick: async () => {
+        const x = await api("POST", `/api/leads/${l.id}/convert`, {}); toast(`${x.note}：${x.task_id}`); loadLeads(); } }, "转选品")) : ""))
+    : [el("div", { class: "empty" }, "这个状态下没有线索")]));
+  const fresh = leads.filter((l) => l.status === "新").length;
+  if ($("leadStatus").value === "新" || !$("leadStatus").value) { $("leadCount").textContent = fresh; $("leadCount").hidden = !fresh; }
+}
+
 // ---- 本机 CLI ----
 async function loadRuntimes() {
+  // 要逐个跑 --version，几秒才回来；先给一行提示，别让表格空着像坏了
+  $("runtimeRows").replaceChildren(el("tr", {}, el("td", { colspan: 4, class: "empty" }, "正在检测本机底座（逐个运行 --version，需要几秒）…")));
   const d = await api("GET", "/api/runtimes");
   rows("runtimeRows", d.runtimes, [
     (r) => r.label + (r.key === d.default ? "（默认）" : r.key === d.fallback ? "（备选）" : ""),
@@ -809,10 +1193,37 @@ function relativeTime(value){
   if(age<60000)return '刚刚更新';if(age<3600000)return `${Math.floor(age/60000)} 分钟前`;
   if(age<86400000)return `${Math.floor(age/3600000)} 小时前`;return `${Math.floor(age/86400000)} 天前`;
 }
+// 看板拖拽（照 Multica）：任意卡片拖到任意一列改状态，同一列里拖动排序；拖到边缘自动滚动。分身正在跑的那张不能拖
+const RUNNING_NOW=['进行中','执行中'];
+let dragId=null;
+function dropBefore(col,y){
+  const cards=[...col.querySelectorAll('.task-card:not(.dragging)')];
+  const hit=cards.find(c=>{const r=c.getBoundingClientRect();return y<r.top+r.height/2;});
+  return hit?hit.dataset.id:null;
+}
+function clearDropMarks(){document.querySelectorAll('.drop-line').forEach(x=>x.remove());document.querySelectorAll('.board-column.drop-ok').forEach(c=>c.classList.remove('drop-ok'));}
+function showDropMark(col,y){
+  clearDropMarks();col.classList.add('drop-ok');
+  const items=col.querySelector('.column-items');const before=dropBefore(col,y);const line=el('div',{class:'drop-line'});
+  const ref=before?items.querySelector(`.task-card[data-id="${CSS.escape(before)}"]`):null;
+  const empty=items.querySelector('.column-empty');
+  if(ref)items.insertBefore(line,ref);else if(empty)items.insertBefore(line,empty);else items.append(line);
+}
+// 拖到看板左右边缘时横向滚动，拖到页面上下边缘时纵向滚动
+document.addEventListener('dragover',e=>{
+  if(!dragId)return;const board=$('taskBoard');if(!board)return;const r=board.getBoundingClientRect();const edge=90,step=28;
+  if(e.clientX>r.right-edge)board.scrollLeft+=step;else if(e.clientX<r.left+edge)board.scrollLeft-=step;
+  const main=document.querySelector('main');const m=main.getBoundingClientRect();
+  if(e.clientY>m.bottom-60)main.scrollTop+=step;else if(e.clientY<m.top+60)main.scrollTop-=step;
+});
 function taskCard(t){
-  return el('button',{class:'task-card',onclick:()=>openTask(t.id),'aria-label':`${t.id} ${t.title}`},
+  const locked=RUNNING_NOW.includes(t.status);
+  return el('button',{class:'task-card',onclick:()=>openTask(t.id),'aria-label':`${t.id} ${t.title}`,'data-id':t.id,
+    draggable:locked?'false':'true',title:locked?'分身正在跑，这一轮结束后才能拖':'拖到其他列改状态，在列里上下拖可以排序',
+    ondragstart:e=>{dragId=t.id;e.dataTransfer.setData('text/plain',t.id);e.dataTransfer.effectAllowed='move';e.currentTarget.classList.add('dragging');},
+    ondragend:e=>{dragId=null;e.currentTarget.classList.remove('dragging');clearDropMarks();}},
     el('div',{class:'task-id'},t.id),el('div',{class:'task-title'},t.title),
-    el('span',{class:'task-label'},t.shop_key||t.scene||t.source),
+    el('span',{class:'task-label'},shopScene(t)||t.source),
     el('div',{class:'task-footer'},el('span',{},el('span',{class:'agent-mark'},'✳'),t.runtime||'待分配'),
       el('span',{title:fmtTime(t.updated_at)},relativeTime(t.updated_at))));
 }
@@ -828,12 +1239,22 @@ function renderTasks(){
   if(taskMode==='list'){
     board.replaceChildren(el('table',{class:'list-table'},el('thead',{},el('tr',{},...['任务','状态','店铺 / 场景','运行时','最近更新'].map(h=>el('th',{},h)))),
       el('tbody',{},...(shown.length?shown.map(t=>el('tr',{},el('td',{},el('button',{onclick:()=>openTask(t.id)},el('span',{class:'task-id'},t.id+'  '),t.title)),
-        el('td',{},el('span',{class:'tag'},t.status)),el('td',{},t.shop_key||t.scene||'—'),el('td',{},t.runtime||'待分配'),el('td',{},relativeTime(t.updated_at)))):
+        el('td',{},el('span',{class:'tag'},t.status)),el('td',{},shopScene(t)||'—'),el('td',{},t.runtime||'待分配'),el('td',{},relativeTime(t.updated_at)))):
         [el('tr',{},el('td',{colspan:5,class:'empty'},tasks.length?'没有符合筛选条件的任务':'还没有任务。在飞书私聊机器人，交办第一件事。'))]))));return;
   }
   board.replaceChildren(...GROUPS.map(g=>{
-    const items=shown.filter(t=>taskGroup(t)===g);
-    return el('section',{class:'board-column','aria-label':g.name},el('div',{class:'column-head'},el('span',{class:`status-dot ${g.key}`}),g.name,el('span',{class:'column-count'},items.length)),
+    const items=shown.filter(t=>taskGroup(t)===g).sort((a,b)=>(a.rank??-1)-(b.rank??-1));
+    return el('section',{class:'board-column','aria-label':g.name,'data-group':g.key,
+      ondragover:e=>{if(!dragId)return;e.preventDefault();e.dataTransfer.dropEffect='move';showDropMark(e.currentTarget,e.clientY);},
+      ondragleave:e=>{if(!e.currentTarget.contains(e.relatedTarget))clearDropMarks();},
+      ondrop:async e=>{e.preventDefault();const col=e.currentTarget;const id=e.dataTransfer.getData('text/plain')||dragId;
+        const t=tasks.find(x=>x.id===id);const before=dropBefore(col,e.clientY);clearDropMarks();if(!t)return;
+        const ids=[...col.querySelectorAll('.task-card')].map(c=>c.dataset.id).filter(x=>x!==id);
+        const at=before?ids.indexOf(before):ids.length;ids.splice(at<0?ids.length:at,0,id);
+        const from=taskGroup(t).key;
+        try{const r=await api('POST',`/api/tasks/${encodeURIComponent(id)}/move`,{from,to:g.key,order:ids});if(from!==g.key)toast(`${id} ${r.note}`);}catch(err){}
+        await loadTasks();}},
+      el('div',{class:'column-head'},el('span',{class:`status-dot ${g.key}`}),g.name,el('span',{class:'column-count'},items.length)),
       el('div',{class:'column-items'},...(items.length?items.map(taskCard):[el('div',{class:'column-empty'},icon(g.key==='closed'?'work':'inbox'),q||status?'没有符合条件的任务':'暂无任务')])));
   }));
 }
@@ -841,18 +1262,34 @@ async function loadTasks(){
   try{const d=await api('GET','/api/tasks');tasks=d.tasks;renderTasks();$('syncStatus').replaceChildren(el('span',{class:'sync-dot'}),'已更新 · '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}));}
   catch(e){$('syncStatus').textContent='更新失败';$('taskBoard').replaceChildren(el('div',{class:'board-notice'},'任务加载失败，请检查控制台连接后重试。',el('div',{class:'row',style:'justify-content:center'},el('button',{class:'btn',onclick:loadTasks},'重新加载'))));}
 }
-async function openTask(id){
+let detailTimer=null;
+async function sendDetailReply(id){
+  const text=$('detailReply').value.trim();if(!text)return;
+  const r=await api('POST',`/api/tasks/${encodeURIComponent(id)}/reply`,{text});toast(r.note,!r.note.startsWith('已交给'));
+  await openTask(id,true);loadTasks();
+}
+async function openTask(id,refresh=false){
   const request=++detailRequest;
-  $('detailId').textContent=id;$('taskDetail').replaceChildren(el('h2',{id:'detailTitle'},'正在读取任务…'));
+  $('detailId').textContent=id;if(!refresh)$('taskDetail').replaceChildren(el('h2',{id:'detailTitle'},'正在读取任务…'));
   if(!$('taskDialog').open)$('taskDialog').showModal();
   try{
-    const {task:t,steps}=await api('GET','/api/tasks/'+encodeURIComponent(id));if(request!==detailRequest)return;
+    const d=await api('GET','/api/tasks/'+encodeURIComponent(id));if(request!==detailRequest)return;const {task:t,steps}=d;
     const info=el('dl',{class:'detail-grid'});
-    for(const [label,value] of [['状态',t.status],['来源',t.source],['店铺 / 场景',t.shop_key||t.scene||'—'],['运行时',t.runtime||'待分配'],['创建时间',fmtTime(t.created_at)],['更新时间',fmtTime(t.updated_at)]])info.append(el('div',{},el('dt',{},label),el('dd',{},value)));
+    for(const [label,value] of [['状态',t.status],['来源',t.source],['店铺 / 场景',shopScene(t)||'—'],['运行时',t.runtime||'待分配'],['创建时间',fmtTime(t.created_at)],['更新时间',fmtTime(t.updated_at)]])info.append(el('div',{},el('dt',{},label),el('dd',{},value)));
     const blocks=[];for(const [label,value] of [['当前步骤',t.current_step],['等待事项',t.waiting],['阻塞原因',t.blocker],['交付结果',t.conclusion]])if(value)blocks.push(el('div',{class:'detail-block'},el('h3',{},label),value));
-    $('taskDetail').replaceChildren(el('h2',{id:'detailTitle'},t.title),info,...blocks,el('div',{class:'detail-block'},el('h3',{},'执行步骤'),
-      ...(steps.length?steps.map(s=>el('div',{class:'step'},el('span',{class:'tag'},s.status),'  '+s.name,el('p',{},s.summary||s.error||'暂无摘要'))):[el('p',{class:'meta'},'还没有执行步骤')])),
-      el('p',{class:'meta'},'在飞书引用原任务消息，可以补充要求或继续处理。'));
+    const fromFeishu=t.source!=='控制台对话';
+    const convo=el('div',{class:'detail-block'},el('h3',{},'继续处理'),
+      ...(d.messages.length?[el('div',{class:'detail-chat'},...d.messages.map(m=>el('div',{class:`ask-msg ${m.role}`},...(m.role==='user'?[m.text]:mdLite(m.text)))))]:[]),
+      d.busy?el('p',{class:'meta'},d.queue_state==='running'?'分身在处理…':'排队中…'):'',
+      d.serve_alive?'':el('p',{class:'meta',style:'color:var(--warn)'},'任务服务没在运行：补充会排队，服务启动后才处理。'),
+      el('textarea',{id:'detailReply',rows:'3',placeholder:'补充要求或接着问…（回车发送，Shift+回车换行）',
+        onkeydown:e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendDetailReply(id);}}}),
+      el('div',{class:'row',style:'gap:8px'},el('span',{class:'meta'},fromFeishu?'分身的汇报会回到飞书原来的 thread；在飞书里引用回复也一样能接着处理。':'回复会显示在这里，也能在「问分身」里接着聊。'),
+        el('span',{class:'spacer'}),el('button',{class:'btn primary',type:'button',onclick:()=>sendDetailReply(id)},'发送')));
+    $('taskDetail').replaceChildren(el('h2',{id:'detailTitle'},t.title),info,...blocks,convo,el('div',{class:'detail-block'},el('h3',{},'执行步骤'),
+      ...(steps.length?steps.map(s=>el('div',{class:'step'},el('span',{class:'tag'},s.status),'  '+s.name,el('p',{},s.summary||s.error||'暂无摘要'))):[el('p',{class:'meta'},'还没有执行步骤')])));
+    const chat=$('taskDetail').querySelector('.detail-chat');if(chat)chat.scrollTop=chat.scrollHeight;
+    clearTimeout(detailTimer);if(d.busy)detailTimer=setTimeout(()=>{if($('taskDialog').open&&$('detailId').textContent===id)openTask(id,true);},2500);
   }catch(e){if(request===detailRequest)$('taskDetail').replaceChildren(el('h2',{id:'detailTitle'},'无法读取任务'),el('p',{class:'meta'},'请关闭后重试。'));}
 }
 $('taskSearch').oninput=renderTasks;$('taskStatus').onchange=renderTasks;
@@ -872,7 +1309,7 @@ matchMedia('(max-width:760px)').addEventListener('change',syncNavigation);syncNa
 
 // ---- 页面导航 ----
 const loaders={tasks:loadTasks,memories:loadMemories,drafts:loadDrafts,recalls:loadRecalls,audit:loadAudit,
-  config:loadConfig,intakeView:loadIntake,runtimes:loadRuntimes,costs:loadCosts,shadow:loadShadow,listings:loadListings,csDrafts:loadCsDrafts,csProfiles:loadCsProfiles};
+  config:loadConfig,intakeView:loadIntake,runtimes:loadRuntimes,costs:loadCosts,shadow:loadShadow,listings:loadListings,radar:loadRadar,csDrafts:loadCsDrafts,csProfiles:loadCsProfiles};
 async function navigate(tab,filter='all'){
   if(!loaders[tab])return;currentTab=tab;taskFilter=filter;
   const buttons=[...$('tabs').querySelectorAll('button')];
@@ -896,6 +1333,122 @@ api('GET','/api/whoami').then(({role})=>{
 }).catch(()=>{$('roleLabel').textContent='连接失败';});
 navigate('tasks');
 api('GET','/api/drafts?status='+encodeURIComponent('待审核')).then(({drafts})=>setDraftCount(drafts.length)).catch(()=>{});
+
+// ---- 问分身（控制台对话）：每个对话是一个任务，由任务服务执行，回复写回对话记录 ----
+let askConv = null, askTimer = null;
+function mdLite(text) {
+  const inline = (s) => {
+    const parts = s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+    return parts.map((x) => x.startsWith("**") ? el("strong", {}, x.slice(2, -2)) : x.startsWith("`") ? el("code", {}, x.slice(1, -1)) : x);
+  };
+  const out = []; let list = null, table = null;
+  for (const line of String(text).split("\n")) {
+    if (/^\s*\|/.test(line)) { if (!table) { table = []; out.push(() => el("pre", {}, table.join("\n"))); } table.push(line); list = null; continue; }
+    table = null;
+    const m = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);
+    if (m) { if (!list) { list = el("ul", {}); out.push(list); } list.append(el("li", {}, ...inline(m[1]))); continue; }
+    list = null;
+    if (line.trim()) out.push(el("p", {}, ...inline(line.replace(/^#+\s*/, ""))));
+  }
+  return out.map((x) => (typeof x === "function" ? x() : x));
+}
+async function askOpen() {
+  $("askPanel").hidden = false; $("askBtn").hidden = true;
+  const d = await api("GET", "/api/chat");
+  $("askRuntime").replaceChildren(...d.runtimes.map((r) => el("option", { value: r.key, ...(r.default ? { selected: "" } : {}) }, r.label)));
+  $("askServe").replaceChildren(d.serve_alive ? "" : el("div", { class: "role-banner", style: "margin:8px 10px 0" },
+    "任务服务没在运行：消息会排队，服务启动后分身才会回复。没接飞书时可以运行 ecom-twin serve --local。"));
+  askRenderHistory(d.conversations);
+  await askShow(askConv);
+  $("askInput").focus();
+}
+function askRenderHistory(convs) {
+  $("askHistory").replaceChildren(el("div", { class: "meta", style: "padding:4px 8px" }, "历史对话"),
+    ...(convs.length ? convs.map((c) => el("div", { class: "h-item", onclick: () => { $("askHistory").hidden = true; askShow(c.id); } },
+      el("span", {}, c.title), el("span", { class: "meta" }, fmtTime(c.updated_at)))) : [el("div", { class: "meta", style: "padding:8px" }, "还没有对话")]));
+}
+const ASK_STARTERS = ["今天有什么要我处理的？", "帮我建一个雷达：每天早上 9 点盯美国的加热眼罩", "最近雷达出了哪些新线索？"];
+async function askShow(cid) {
+  clearTimeout(askTimer); askConv = cid || null;
+  $("askRuntime").disabled = !!askConv;
+  if (!askConv) {
+    $("askTitle").textContent = "新对话 ▾"; $("askState").textContent = "";
+    $("askBody").replaceChildren(el("div", { class: "ask-empty" }, el("div", { style: "font-size:28px" }, "✳"),
+      el("strong", {}, "问分身"), el("div", { class: "meta" }, "查任务和线索、建雷达规则、让它去调研打分"),
+      ...ASK_STARTERS.map((s) => el("button", { class: "btn", type: "button", onclick: () => { $("askInput").value = s; askSend(); } }, s))));
+    return;
+  }
+  const d = await api("GET", `/api/chat/${encodeURIComponent(askConv)}`);
+  $("askTitle").textContent = d.title + " ▾";
+  if (![...$("askRuntime").options].some((o) => o.value === d.runtime)) $("askRuntime").append(el("option", { value: d.runtime }, d.runtime));
+  $("askRuntime").value = d.runtime;
+  const drafts = d.drafts.filter((x) => x.status === "待审核");
+  $("askBody").replaceChildren(...d.messages.map((m) => el("div", { class: `ask-msg ${m.role}` }, ...(m.role === "user" ? [m.text] : mdLite(m.text)))),
+    ...drafts.map((x) => el("div", { class: "ask-draft" }, el("strong", {}, `待你确认：${x.type === "radar" ? "雷达规则" : "记忆"}《${x.name}》`),
+      el("pre", { style: "margin:6px 0;max-height:160px;overflow:auto" }, x.body),
+      el("div", { class: "row", style: "gap:8px;margin:0" }, el("span", { class: "spacer" }),
+        el("button", { class: "btn", type: "button", onclick: async () => { await api("POST", `/api/drafts/${x.id}/reject`, { note: "在对话里驳回" }); toast("已驳回"); askShow(askConv); } }, "驳回"),
+        el("button", { class: "btn primary owner-only", type: "button", onclick: async () => { await api("POST", `/api/drafts/${x.id}/approve`, {}); toast("已采纳，规则生效"); askShow(askConv); if (currentTab === "radar") loadRadar(); } }, "采纳")))));
+  $("askBody").scrollTop = $("askBody").scrollHeight;
+  $("askState").textContent = d.busy ? (d.queue_state === "running" ? "分身在想…" : "排队中…") : "";
+  if (d.busy) askTimer = setTimeout(() => askShow(askConv), 2000);
+}
+async function askSend() {
+  const msg = $("askInput").value.trim();
+  if (!msg) return;
+  $("askSend").disabled = true;
+  try {
+    const r = await api("POST", "/api/chat", { conversation_id: askConv, message: msg, runtime: $("askRuntime").value });
+    $("askInput").value = "";
+    await askShow(r.conversation_id);
+    askRenderHistory((await api("GET", "/api/chat")).conversations);
+  } finally { $("askSend").disabled = false; }
+}
+$("askBtn").onclick = askOpen;
+$("askClose").onclick = () => { $("askPanel").hidden = true; $("askBtn").hidden = false; clearTimeout(askTimer); };
+// 大小：从左边、上边、左上角拖动调整（对话框固定在右下角）；放大 / 还原；记住上次的大小
+const ASK_MIN = { w: 360, h: 420 };
+function askClamp(w, h) {
+  return { w: Math.round(Math.max(ASK_MIN.w, Math.min(w, innerWidth - 40))), h: Math.round(Math.max(ASK_MIN.h, Math.min(h, innerHeight - 40))) };
+}
+function askApplySize(size) {
+  const s = askClamp(size.w, size.h);
+  $("askPanel").style.width = s.w + "px"; $("askPanel").style.height = s.h + "px";
+  return s;
+}
+function askSaveSize(s) { try { localStorage.setItem("askSize", JSON.stringify(s)); } catch (e) { /* 存不了就算了 */ } }
+function askLoadSize() { try { return JSON.parse(localStorage.getItem("askSize") || "null"); } catch (e) { return null; } }
+const savedAsk = askLoadSize();
+if (savedAsk && savedAsk.w && savedAsk.h) askApplySize(savedAsk);
+function askToggleBig() {
+  const big = $("askPanel").classList.toggle("big");
+  $("askExpand").textContent = big ? "⤡" : "⤢";
+  $("askExpand").title = big ? "还原" : "放大"; $("askExpand").setAttribute("aria-label", $("askExpand").title);
+}
+$("askExpand").onclick = askToggleBig;
+document.querySelector("#askPanel .ask-head").addEventListener("dblclick", (e) => { if (!e.target.closest("button")) askToggleBig(); });
+document.querySelectorAll("#askPanel .ask-resize").forEach((h) => h.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const edge = h.dataset.edge, panel = $("askPanel"), r = panel.getBoundingClientRect();
+  const start = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+  document.body.classList.add("ask-resizing"); h.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    const w = edge.includes("l") ? start.w + (start.x - ev.clientX) : start.w;
+    const hh = edge.includes("t") ? start.h + (start.y - ev.clientY) : start.h;
+    askApplySize({ w, h: hh });
+  };
+  const up = () => {
+    h.removeEventListener("pointermove", move); h.removeEventListener("pointerup", up);
+    document.body.classList.remove("ask-resizing");
+    const b = panel.getBoundingClientRect(); askSaveSize({ w: Math.round(b.width), h: Math.round(b.height) });
+  };
+  h.addEventListener("pointermove", move); h.addEventListener("pointerup", up);
+}));
+addEventListener("resize", () => { const s = askLoadSize(); if (s) askApplySize(s); });
+$("askNew").onclick = () => askShow(null);
+$("askTitle").onclick = () => { $("askHistory").hidden = !$("askHistory").hidden; };
+$("askSend").onclick = askSend;
+$("askInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); askSend(); } });
 </script>
 </body>
 </html>

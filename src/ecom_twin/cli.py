@@ -44,6 +44,7 @@ from .proposals import ProposalRejected
 from .runtime import RUNTIMES, build_runtime, check_all
 from .scheduler import Scheduler, build_jobs
 from .store import Store
+from .tasks import PENDING_SCENE, title_from_text
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -280,7 +281,10 @@ def cmd_runtimes(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    import os
     from .tooling import ensure_task_tools
+    if getattr(args, "local", False):
+        os.environ["ECOM_TWIN_FEISHU"] = "console"  # 不连飞书：消息只打印，MCP 子进程也继承
     try:
         ensure_task_tools(load_settings(args.config))
     except (ValueError, RuntimeError, OSError) as error:
@@ -314,6 +318,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
             stop.wait(min(args.interval, 1))
 
     threading.Thread(target=housekeeping, daemon=True).start()
+    if getattr(args, "local", False):
+        print("分身已启动（本地模式，不连飞书）：执行控制台排进来的任务和「问分身」对话，运行定时作业和选品雷达。Ctrl+C 退出。")
+        try:
+            stop.wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop.set()
+            pool.shutdown(wait=False)
+        return 0
     print("分身已启动：监听飞书消息（审批指令、私聊建单、thread 回复），运行定时作业。Ctrl+C 退出。")
     try:
         for msg in task_messages():
@@ -355,7 +369,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if args.runtime:
         app.settings.runtime.default = args.runtime
     dispatcher = _dispatcher(app, args.config)
-    task = app.tasks.create(args.text[:40], TaskSource.SELF_DM, "待定", owner=app.settings.feishu.owner_open_id)
+    task = app.tasks.create(title_from_text(args.text), TaskSource.SELF_DM, PENDING_SCENE, owner=app.settings.feishu.owner_open_id)
     print(f"已建任务 {task.id}，底座：{app.settings.runtime.default}")
     result = dispatcher.run_task(task.id, f"负责人交代的任务：\n{args.text}", resume=False)
     task = app.store.get_task(task.id)
@@ -731,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve")
     s.add_argument("--interval", type=float, default=5.0)
     s.add_argument("--workers", type=int, default=2, help="同时处理的任务数")
+    s.add_argument("--local", action="store_true", help="本地模式：不连飞书，只执行控制台派的任务、对话和定时作业")
     s.set_defaults(func=cmd_serve)
     a = sub.add_parser("ask")
     a.add_argument("text")

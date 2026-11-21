@@ -24,6 +24,7 @@ class TaskSource(str, Enum):
     MESSAGE = "飞书消息"
     SCHEDULE = "定时任务"
     SELF_DM = "本人私聊"
+    CHAT = "控制台对话"
 
 
 class StepStatus(str, Enum):

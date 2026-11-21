@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -221,6 +222,58 @@ CREATE TABLE IF NOT EXISTS metrics_daily (
     day TEXT NOT NULL, shop_key TEXT NOT NULL, sku TEXT NOT NULL, metrics TEXT,
     PRIMARY KEY (day, shop_key, sku)
 );
+CREATE TABLE IF NOT EXISTS research_snapshots (
+    id TEXT PRIMARY KEY,
+    region TEXT NOT NULL,
+    platform TEXT,
+    playbook TEXT NOT NULL,
+    playbook_version TEXT,
+    task_id TEXT,
+    created_at TEXT NOT NULL,
+    data TEXT NOT NULL,
+    terms TEXT,
+    new_terms TEXT
+);
+CREATE TABLE IF NOT EXISTS radar_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    trigger TEXT,
+    status TEXT NOT NULL,
+    note TEXT,
+    signals TEXT,
+    snapshots TEXT,
+    task_id TEXT
+);
+CREATE TABLE IF NOT EXISTS leads (
+    id TEXT PRIMARY KEY,
+    rule TEXT,
+    region TEXT,
+    platform TEXT,
+    title TEXT NOT NULL,
+    direction TEXT,
+    evidence TEXT,
+    suggestion TEXT,
+    snapshot_id TEXT,
+    task_id TEXT,
+    status TEXT NOT NULL,
+    reason TEXT,
+    selection_task_id TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS board_order (
+    task_id TEXT PRIMARY KEY,
+    rank REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS memory_drafts (
     id TEXT PRIMARY KEY,
     task_id TEXT,
@@ -279,6 +332,21 @@ class _LockedConnection:
     def commit(self) -> None:
         with self._lock:
             self._conn.commit()
+
+    @contextmanager
+    def immediate(self):
+        """跨进程的写事务：一开始就拿 SQLite 写锁（BEGIN IMMEDIATE），读到的状态在提交前不会被别的进程改掉。
+        控制台、MCP 子进程和 serve 共用一个库，排队合并和领取任务都要用它。"""
+        with self._lock:
+            if self._conn.in_transaction:
+                self._conn.commit()
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
 
     def __enter__(self):
         self._lock.acquire()
@@ -467,19 +535,48 @@ class Store:
             )
 
     def claim_next_task(self) -> dict[str, Any] | None:
-        """原子领取最早排队任务；队列 worker 以此保证单次只触发一个任务。"""
-        with self.conn:
-            row = self.conn.execute(
+        """原子领取最早排队任务；队列 worker 以此保证单次只触发一个任务。
+        用跨进程写事务：控制台正在往同一行合并消息时，要么先合并完再领，要么先领走、合并的另起一轮。"""
+        with self.conn.immediate() as conn:
+            row = conn.execute(
                 "SELECT * FROM task_queue WHERE state='queued' ORDER BY enqueued_at, rowid LIMIT 1"
             ).fetchone()
             if not row:
                 return None
             now = _ts(utcnow())
-            self.conn.execute("UPDATE task_queue SET state='running', started_at=? WHERE task_id=?",
-                              (now, row['task_id']))
+            conn.execute("UPDATE task_queue SET state='running', started_at=? WHERE task_id=?", (now, row['task_id']))
             result = dict(row)
             result['state'], result['started_at'] = 'running', now
             return result
+
+    def enqueue_merged(self, task_id: str, workdir: Path, prompt: str, resume: bool) -> str:
+        """排一轮提示词。还没开跑的同一任务又来一条：并进同一轮（前面的不丢）；已经开跑了：另起一轮。
+        每次写一个新文件，不覆盖可能正被读取的旧文件；判断和写入在同一个跨进程写事务里。"""
+        import time as _time
+        workdir.mkdir(parents=True, exist_ok=True)
+        with self.conn.immediate() as conn:
+            row = conn.execute("SELECT * FROM task_queue WHERE task_id=?", (task_id,)).fetchone()
+            payload = {"prompt": prompt, "resume": resume}
+            if row and row["state"] == "queued":
+                try:
+                    earlier = json.loads(Path(row["prompt_path"]).read_text(encoding="utf-8"))
+                    payload = {"prompt": f"{earlier['prompt']}\n\n（随后又补充）\n{prompt}", "resume": earlier["resume"]}
+                except (OSError, ValueError, KeyError):
+                    pass
+            path = workdir / f"queue_prompt-{_time.time_ns()}.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+            conn.execute(
+                """INSERT INTO task_queue(task_id,prompt_path,resume,state,enqueued_at,started_at,finished_at,error)
+                VALUES(?,?,?,'queued',?,NULL,NULL,NULL)
+                ON CONFLICT(task_id) DO UPDATE SET prompt_path=excluded.prompt_path,
+                    resume=excluded.resume, state='queued', enqueued_at=excluded.enqueued_at,
+                    started_at=NULL, finished_at=NULL, error=NULL""",
+                (task_id, str(path), int(bool(payload["resume"])), _ts(utcnow())))
+        return str(path)
 
     def get_task_queue(self, task_id: str) -> dict[str, Any] | None:
         row = self.conn.execute("SELECT * FROM task_queue WHERE task_id=?", (task_id,)).fetchone()
@@ -717,6 +814,177 @@ class Store:
             return False
 
     # ---- kv（调度器上次运行时间等） ----
+    # ---- 选品调研快照 ----
+    def add_research_snapshot(self, region: str, platform: str, playbook: str, version: str, task_id: str,
+                              data: dict, terms: list[str], new_terms: list[str]) -> str:
+        sid = self.next_id("R")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO research_snapshots(id, region, platform, playbook, playbook_version, task_id, created_at, "
+                "data, terms, new_terms) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (sid, region, platform, playbook, version, task_id, _ts(utcnow()), _j(data), _j(terms), _j(new_terms)))
+        return sid
+
+    def _snapshot_row(self, row) -> dict | None:
+        if not row:
+            return None
+        return {"id": row["id"], "region": row["region"], "platform": row["platform"] or "", "playbook": row["playbook"],
+                "playbook_version": row["playbook_version"] or "", "task_id": row["task_id"] or "",
+                "created_at": _dt(row["created_at"]), "data": json.loads(row["data"]),
+                "terms": json.loads(row["terms"] or "[]"), "new_terms": json.loads(row["new_terms"] or "[]")}
+
+    def get_research_snapshot(self, sid: str) -> dict | None:
+        return self._snapshot_row(self.conn.execute("SELECT * FROM research_snapshots WHERE id=?", (sid,)).fetchone())
+
+    def latest_research_snapshot(self, region: str, playbook: str) -> dict | None:
+        return self._snapshot_row(self.conn.execute(
+            "SELECT * FROM research_snapshots WHERE region=? AND playbook=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (region, playbook)).fetchone())
+
+    def seen_research_terms(self, region: str, playbook: str) -> set[str]:
+        """这个区域、这份剧本以前所有快照里出现过的词：第一次调研是基准，之后不在里面的就是新词。"""
+        rows = self.conn.execute("SELECT terms FROM research_snapshots WHERE region=? AND playbook=?", (region, playbook))
+        return {t for (raw,) in rows.fetchall() for t in json.loads(raw or "[]")}
+
+    def list_research_snapshots(self, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM research_snapshots ORDER BY created_at DESC, id DESC LIMIT ?", (limit,))
+        return [self._snapshot_row(r) for r in rows.fetchall()]
+
+    def sales_summary(self, since_day: str, shops: list[str] | None = None, limit: int = 20) -> list[dict]:
+        """ERP 导入的日数据，按店铺 + SKU 汇总近一段时间的销量和销售额（选品调研的「自有店铺销量」）。"""
+        rows = self.conn.execute("SELECT shop_key, sku, metrics FROM metrics_daily WHERE day >= ?", (since_day,))
+        totals: dict[tuple[str, str], dict[str, float]] = {}
+        for shop, sku, raw in rows.fetchall():
+            if shops and shop not in shops:
+                continue
+            m = json.loads(raw or "{}")
+            t = totals.setdefault((shop, sku), {"sales_qty": 0.0, "revenue": 0.0})
+            t["sales_qty"] += float(m.get("sales_qty") or 0)
+            t["revenue"] += float(m.get("revenue") or 0)
+        ranked = sorted(totals.items(), key=lambda kv: -kv[1]["revenue"])[:limit]
+        return [{"shop_key": s, "sku": k, "sales_qty": round(v["sales_qty"], 2), "revenue": round(v["revenue"], 2)}
+                for (s, k), v in ranked]
+
+    # ---- 控制台看板：同一列里人工拖出来的顺序 ----
+    def set_board_order(self, task_ids: list[str]) -> None:
+        with self.conn:
+            for i, tid in enumerate(task_ids):
+                self.conn.execute("INSERT OR REPLACE INTO board_order(task_id, rank) VALUES(?,?)", (tid, float(i)))
+
+    def board_ranks(self) -> dict[str, float]:
+        return {r[0]: r[1] for r in self.conn.execute("SELECT task_id, rank FROM board_order").fetchall()}
+
+    # ---- 控制台「问分身」对话 ----
+    def add_chat_message(self, task_id: str, role: str, text: str) -> int:
+        with self.conn:
+            cur = self.conn.execute("INSERT INTO chat_messages(task_id, role, text, created_at) VALUES(?,?,?,?)",
+                                    (task_id, role, text, _ts(utcnow())))
+        return cur.lastrowid
+
+    def list_chat_messages(self, task_id: str) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM chat_messages WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
+        return [{"id": r["id"], "role": r["role"], "text": r["text"], "created_at": _dt(r["created_at"])} for r in rows]
+
+    def list_conversations(self, limit: int = 50) -> list[Task]:
+        rows = self.conn.execute("SELECT id FROM tasks WHERE source=? ORDER BY updated_at DESC LIMIT ?",
+                                 ("控制台对话", limit)).fetchall()
+        return [self.get_task(r[0]) for r in rows]
+
+    def drafts_for_task(self, task_id: str) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM memory_drafts WHERE task_id=? ORDER BY id", (task_id,))
+        return [dict(r) for r in rows.fetchall()]
+
+    # ---- 选品雷达 ----
+    def add_radar_run(self, rule: str, trigger: str, status: str, note: str, signals: list, snapshots: list[str],
+                      task_id: str = "", started_at: datetime | None = None) -> int:
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO radar_runs(rule, started_at, finished_at, trigger, status, note, signals, snapshots, task_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (rule, _ts(started_at or utcnow()), _ts(utcnow()), trigger, status, note, _j(signals), _j(snapshots), task_id))
+        return cur.lastrowid
+
+    def list_radar_runs(self, rule: str | None = None, limit: int = 30) -> list[dict]:
+        sql, args = "SELECT * FROM radar_runs", []
+        if rule:
+            sql, args = sql + " WHERE rule=?", [rule]
+        rows = self.conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
+        return [{"id": r["id"], "rule": r["rule"], "started_at": _dt(r["started_at"]), "finished_at": _dt(r["finished_at"]),
+                 "trigger": r["trigger"] or "", "status": r["status"], "note": r["note"] or "",
+                 "signals": json.loads(r["signals"] or "[]"), "snapshots": json.loads(r["snapshots"] or "[]"),
+                 "task_id": r["task_id"] or ""} for r in rows]
+
+    def last_radar_run(self, rule: str) -> dict | None:
+        runs = self.list_radar_runs(rule, 1)
+        return runs[0] if runs else None
+
+    LEAD_STATUSES = ("新", "在看", "已转选品", "放弃")
+
+    def add_lead(self, lead: dict) -> str:
+        """同一规则、同一国家、同一标题还没处理完的线索不重复建，直接返回已有的。"""
+        row = self.conn.execute(
+            "SELECT id FROM leads WHERE rule=? AND region=? AND title=? AND status IN ('新','在看')",
+            (lead.get("rule", ""), lead.get("region", ""), lead["title"])).fetchone()
+        if row:
+            return row[0]
+        lid = self.next_id("L")
+        now = _ts(utcnow())
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO leads(id, rule, region, platform, title, direction, evidence, suggestion, snapshot_id, task_id, "
+                "status, reason, selection_task_id, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (lid, lead.get("rule", ""), lead.get("region", ""), lead.get("platform", ""), lead["title"],
+                 lead.get("direction", ""), lead.get("evidence", ""), lead.get("suggestion", ""),
+                 lead.get("snapshot_id", ""), lead.get("task_id", ""), "新", "", "", now, now))
+        return lid
+
+    def _lead_row(self, r) -> dict:
+        return {k: r[k] for k in r.keys()} | {"created_at": _dt(r["created_at"]), "updated_at": _dt(r["updated_at"])}
+
+    def get_lead(self, lid: str) -> dict | None:
+        r = self.conn.execute("SELECT * FROM leads WHERE id=?", (lid,)).fetchone()
+        return self._lead_row(r) if r else None
+
+    def list_leads(self, status: str | None = None, limit: int = 200) -> list[dict]:
+        sql, args = "SELECT * FROM leads", []
+        if status:
+            sql, args = sql + " WHERE status=?", [status]
+        rows = self.conn.execute(sql + " ORDER BY created_at DESC, id DESC LIMIT ?", (*args, limit)).fetchall()
+        return [self._lead_row(r) for r in rows]
+
+    def update_lead(self, lid: str, status: str, reason: str = "") -> dict:
+        """人或 agent 改线索状态：在看、放弃（要原因）、退回新。「已转选品」只能走 claim_lead_conversion。"""
+        if status not in self.LEAD_STATUSES:
+            raise ValueError(f"线索状态只能是 {' / '.join(self.LEAD_STATUSES)}")
+        if status == "已转选品":
+            raise ValueError("转选品要用「转选品」操作，它会建选品任务；不能只改状态")
+        if status == "放弃" and not reason.strip():
+            raise ValueError("放弃要写原因：雷达会按这些原因调整关注方向")
+        lead = self.get_lead(lid)
+        if lead is None:
+            raise KeyError(f"没有线索 {lid}")
+        with self.conn:
+            # 没写新原因就保留原来的
+            self.conn.execute("UPDATE leads SET status=?, reason=COALESCE(NULLIF(?, ''), reason), updated_at=? WHERE id=?",
+                              (status, reason.strip(), _ts(utcnow()), lid))
+        return self.get_lead(lid)
+
+    def claim_lead_conversion(self, lid: str) -> dict | None:
+        """原子地把线索标成「已转选品」：同时两次点击（或控制台和分身同时转）只有一个能成功。返回转之前的线索。"""
+        with self.conn.immediate() as conn:
+            row = conn.execute("SELECT * FROM leads WHERE id=?", (lid,)).fetchone()
+            if row is None or row["status"] not in ("新", "在看"):
+                return self._lead_row(row) if row else None
+            conn.execute("UPDATE leads SET status='已转选品', updated_at=? WHERE id=?", (_ts(utcnow()), lid))
+            return {**self._lead_row(row), "_claimed": True}
+
+    def set_lead_selection_task(self, lid: str, task_id: str, revert_to: str | None = None) -> None:
+        with self.conn:
+            if revert_to:  # 建任务失败：退回原状态
+                self.conn.execute("UPDATE leads SET status=?, updated_at=? WHERE id=?", (revert_to, _ts(utcnow()), lid))
+            else:
+                self.conn.execute("UPDATE leads SET selection_task_id=?, updated_at=? WHERE id=?", (task_id, _ts(utcnow()), lid))
+
     def kv_get(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
         return row[0] if row else None

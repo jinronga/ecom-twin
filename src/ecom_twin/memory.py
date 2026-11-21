@@ -142,6 +142,22 @@ def make_slug(name: str, fallback: str = "memory") -> str:
     return _SLUG.sub("-", name).strip("-")[:80] or fallback
 
 
+def _check_playbook(type_: str, body: str, label: str = "") -> None:
+    """选品剧本（type = selection）的规则写错了就拒绝写入：读不出规则的剧本会让选品任务直接失败。"""
+    from .radar import RADAR_TYPE, RadarError, parse_radar
+    from .selection import SELECTION_TYPE, PlaybookError, parse_rules
+    kind = (type_ or "").strip()
+    try:
+        if kind == SELECTION_TYPE:
+            parse_rules(body)
+        elif kind == RADAR_TYPE:
+            parse_radar(label or "雷达规则", body)
+    except PlaybookError as e:
+        raise MemoryError(f"{label}选品剧本的规则有问题：{e}") from e
+    except RadarError as e:
+        raise MemoryError(f"{label}雷达规则有问题：{e}") from e
+
+
 class MemoryError(ValueError):
     """记忆维护的业务错误（控制台返回 400）。"""
 
@@ -252,6 +268,7 @@ class MemoryStore:
             raise MemoryError("这条记忆在你打开之后被改过（可能刚采纳了草稿或回滚过），先刷新看最新内容再改")
         before = parse_memory(path) if path.exists() else None
         self._check_links(_one_line(name), body)
+        _check_playbook(type_, body)
         if before and before.name != _one_line(name):
             referrers = self.referrers(before.name)
             if referrers:
@@ -346,6 +363,7 @@ class MemoryStore:
             raise MemoryError(f"《{'》《'.join(self.referrers(current.name))}》还链着《{current.name}》，"
                               "回滚到旧名字会让链接断掉")
         self._check_links(restored.name, restored.body)
+        _check_playbook(restored.type, restored.body)
         self._snapshot(slug)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._path(slug).write_text(text, encoding="utf-8")
@@ -403,6 +421,7 @@ class MemoryStore:
             if not memory.description or len(memory.description) > MAX_DESCRIPTION_LENGTH:
                 raise MemoryError(f"《{memory.name}》的描述为空或超过 {MAX_DESCRIPTION_LENGTH} 字")
             _secret_free(memory.body, memory.description)
+            _check_playbook(memory.type, memory.body, f"《{memory.name}》")
             parsed.append((memory, content))
         incoming = {m.name for m, _ in parsed}
         for memory, _ in parsed:
@@ -484,6 +503,10 @@ class MemoryStore:
                 problems.append(("error", f"《{memory.name}》描述 {len(memory.description)} 字，"
                                           f"超过上限 {MAX_DESCRIPTION_LENGTH} 字"))
         problems += [("error", f"有 {n} 条记忆都叫《{name}》，读取时分不出是哪条") for name, n in names.items() if n > 1]
+        from .radar import load_rules
+        from .selection import load_playbooks
+        problems += [("error", f"选品剧本{e}") for e in load_playbooks(self.all())[1]]
+        problems += [("error", f"雷达规则{e}") for e in load_rules(self.all())[1]]
         for memory in self.all():
             for target in links_in(memory.body):
                 if target not in names:
@@ -557,7 +580,23 @@ class MemoryStore:
         record = {"task_id": task_id, "mode": mode, "type": fields["type"] or "experience",
                   "name": fields["name"] or fields["target_name"], "reason": fields["why"], **fields}
         existing = self.store.find_memory_draft(record)
-        return existing or self.store.add_memory_draft(record)
+        if existing:
+            return existing
+        draft_id = self.store.add_memory_draft(record)
+        self._maybe_auto_adopt(draft_id, record)
+        return draft_id
+
+    def _maybe_auto_adopt(self, draft_id: str, record: dict) -> None:
+        """选品剧本里声明了可以自动采纳的节（如「当季热词」），分身改这一节的草稿直接生效。
+
+        照样走 approve：留历史版本、记审计，可以回滚。对不上原文等采纳失败的，留在队列里等人看。"""
+        from .selection import auto_adoptable
+        if not auto_adoptable(self.by_name(record.get("target_name") or ""), record):
+            return
+        try:
+            self.approve(draft_id, actor="auto-adopt")
+        except MemoryError:
+            pass
 
     def apply_draft(self, draft: dict) -> tuple[str, str, str, str, str | None]:
         """按草稿算出采纳后的记忆：(name, description, type, body, 已有记忆的 slug 或 None)。对不上就抛 MemoryError。"""

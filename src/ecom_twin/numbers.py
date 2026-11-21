@@ -63,6 +63,27 @@ def price_sku(item: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
 _NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?%?")
 
 
+def margin_at_price(price: float, source_price: float, exchange_rate: float = 1.0, shipping: float = 0.0,
+                    other_cost: float = 0.0, commission_rate: float = 0.0, extra_rate: float = 0.0,
+                    return_rate: float = 0.0, return_loss_rate: float = 1.0) -> dict[str, Any]:
+    """按市场售价反算每发出一单的预期毛利（选品用；price_sku 是反方向：按目标毛利倒推售价）。
+
+    落地成本 = 货源价×汇率 + 运费 + 其他成本；费用 = 售价×(佣金率 + 其他比例成本，如货到付款手续费)。
+    退货和拒收按 return_rate 计：退回的单拿不到货款、也不收费用，落地成本损失 return_loss_rate 那一部分。
+    预期利润 = (1 − 退货率)×(售价 − 费用) − 落地成本 + 退货率×(1 − 损失比例)×落地成本。
+    """
+    if price <= 0:
+        return {"error": "售价必须大于 0"}
+    landed = float(source_price) * float(exchange_rate) + float(shipping) + float(other_cost)
+    fees = float(price) * (float(commission_rate) + float(extra_rate))
+    r, loss = float(return_rate), float(return_loss_rate)
+    no_return = float(price) - landed - fees
+    profit = (1 - r) * (float(price) - fees) - landed + r * (1 - loss) * landed
+    return {"price": round(float(price), 4), "landed_cost": round(landed, 4), "fees": round(fees, 4),
+            "return_rate": r, "return_cost": round(no_return - profit, 4),
+            "profit": round(profit, 4), "margin_rate": round(profit / float(price), 4)}
+
+
 def _flatten_numbers(value: Any) -> Iterable[float]:
     if isinstance(value, bool):
         return

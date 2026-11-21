@@ -176,10 +176,10 @@ def test_failed_image_delivery_reports_reason_and_continues_other_images(env, tm
     env.app.store.save_task(task)
     env.app.tasks.set_status(task.id, TaskStatus.CLOSED)
     original = env.feishu.reply_image
-    def upload(mid, path):
+    def upload(mid, path, in_thread=False):
         if path == 'bad.png':
             raise FeishuError('HTTP 400: 99991672 missing im:resource:upload')
-        return original(mid, path)
+        return original(mid, path, in_thread)
     monkeypatch.setattr(env.feishu, 'reply_image', upload)
     d._attach_evidence(task.id, 'om_report', ['bad.png', 'good.png'])
     assert len([m for m in env.feishu.sent if m['type'] == 'image']) == 1

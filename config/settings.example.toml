@@ -66,6 +66,9 @@ max_price_change_pct = 10
 [feishu]
 # 汇报和审批卡片默认发给谁（open_id）
 owner_open_id = "ou_xxx"
+# 一个任务的汇报、提问、截图都以「话题」形式回复在原消息下（一件事一个 thread，不刷屏）。
+# 会话不支持话题时自动退回普通引用回复；想要每条都是普通引用回复就改成 false
+reply_in_thread = true
 # 多维表格（任务看板）。不填则只写本地数据库，不同步看板
 base_app_token = ""
 tasks_table_id = ""
@@ -188,3 +191,9 @@ dirs = []
 # base_url = "https://oa.example.com"
 # login_url = "https://oa.example.com/login"
 
+
+# 选品调研的第三方接口（可选，选品剧本的 sources 里写了 third_party_api 才用）。
+# 调用时带 ?region=SA&lang=ar&seeds=a,b；返回 JSON，标了 isSample / is_sample 的当示例数据，不算依据
+[research]
+third_party_url = ""                 # 例："https://api.example.com/v1/hot-products"
+third_party_key_env = ""             # 密钥放 .env，这里只写变量名，例："HOT_PRODUCTS_API_KEY"

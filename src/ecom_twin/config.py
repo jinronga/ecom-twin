@@ -49,6 +49,9 @@ class FeishuSettings:
     readable_chats: list[str] = field(default_factory=list)
     # 允许用负责人本人身份搜索全部聊天记录（需要 lark-cli auth login）。默认关闭
     allow_user_search: bool = False
+    # 照数字分身「一件事一个 thread」：任务的汇报、提问、截图都以话题形式回复在原消息下，不在会话主界面刷屏。
+    # 会话不支持话题时自动退回普通引用回复
+    reply_in_thread: bool = True
 
     @property
     def board_enabled(self) -> bool:
@@ -242,6 +245,13 @@ class ReportSettings:
     inventory_days_min: float = 14   # 可售天数（库存 / 近 7 天日均销量）低于这个值
 
 @dataclass
+class ResearchSettings:
+    """选品调研的第三方接口（可选）。密钥放 .env，这里只写环境变量名：agent 读不到 .env，只有工具进程读得到。"""
+    third_party_url: str = ""
+    third_party_key_env: str = ""
+
+
+@dataclass
 class Settings:
     db_path: Path
     # 功能7：记忆库目录（控制台维护的 Markdown 记忆文件）
@@ -267,6 +277,7 @@ class Settings:
     daily_report: ReportSettings = field(default_factory=ReportSettings)
     outbound: OutboundSettings = field(default_factory=OutboundSettings)
     customer_service: CsSettings = field(default_factory=CsSettings)
+    research: ResearchSettings = field(default_factory=ResearchSettings)
     send_permissions: dict[str, SendPermission] = field(default_factory=dict)
     # 场景 SOP（skill）所在目录，agent 按场景动态加载（DESIGN.md「Skill 动态载入」）
     # 项目自带的 skills/ 总是第一个（同名时优先），再加配置的目录
@@ -319,6 +330,7 @@ def settings_from_raw(raw: dict) -> Settings:
         send_permissions={k: SendPermission(**v) for k, v in raw.get("send_permissions", {}).items()},
         outbound=OutboundSettings(**raw.get("outbound", {})),
         customer_service=CsSettings(**raw.get("customer_service", {})),
+        research=ResearchSettings(**raw.get("research", {})),
         shadow_actions=list(raw.get("shadow", {}).get("actions", [])),
         daily_report=ReportSettings(**{**raw.get("daily_report", {}),
                                        **({"columns": {**ReportSettings().columns,

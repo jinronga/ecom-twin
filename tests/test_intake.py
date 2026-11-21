@@ -61,10 +61,14 @@ def test_quiet_batching_then_new_group_task(env, tmp_path):
     task = env.app.store.list_tasks()[0]
     assert task.origin_chat_type == "group" and "TMS-1042" in task.anchors
     assert len(env.app.store.task_messages(task.id)) == 2
-    # 群没开代发权限：回执、汇报都改为私聊负责人
+    # 群没开代发权限：回执、汇报都改为私聊负责人。照数字分身，第一条在私聊单开一条，之后都跟在这一条下面，不刷屏
     outs = env.app.store.outbound_messages(task.id)
-    assert {o["delivered_to"] for o in outs} == {"私聊负责人"}
-    assert env.feishu.sent[-1]["to"] == "ou_boss" and "该群未开放" in env.feishu.sent[-1]["text"]
+    assert [o["delivered_to"] for o in outs][0] == "私聊负责人"
+    assert all(o["delivered_to"].startswith("私聊负责人（跟在") for o in outs[1:]) and len(outs) >= 2
+    first = next(m for m in env.feishu.sent if m["type"] == "text" and m.get("to") == "ou_boss" and task.id in m["text"])
+    assert "该群未开放" in first["text"]
+    last = env.feishu.sent[-1]
+    assert last["type"] == "reply" and last["reply_to"] == first["message_id"] and last["in_thread"]
 
 
 def test_reply_permission_allows_thread_reply(env, tmp_path):
@@ -72,7 +76,7 @@ def test_reply_permission_allows_thread_reply(env, tmp_path):
     env.app.settings.send_permissions[GROUP] = SendPermission(reply=True)
     d.intake.accept(gmsg("@分身 看下 TMS-7", "om_1"), NOW)
     outs = env.app.store.outbound_messages(env.app.store.list_tasks()[0].id)
-    assert {o["delivered_to"] for o in outs} == {"群 thread"}
+    assert {o["delivered_to"] for o in outs} == {"群话题"}                       # 默认话题回复（照数字分身一件事一个 thread）
 
 
 def test_anchor_merges_without_mention_and_closed_tasks_are_skipped(env, tmp_path):

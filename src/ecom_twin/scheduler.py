@@ -46,6 +46,28 @@ class Scheduler:
         return ran
 
 
+def radar_job(app: Any, memory: Any, dispatcher: Any) -> Callable[[datetime], None]:
+    """选品雷达：调研要访问外网、十几秒到一两分钟，放到后台线程跑，不卡住审批等其他作业；同一时间只跑一轮。"""
+    import threading
+    from .radar import run_due
+    lock = threading.Lock()
+    submit = (lambda task_id, prompt: dispatcher._submit(task_id, prompt, resume=False)) if dispatcher else None
+
+    def work(now: datetime) -> None:
+        try:
+            run_due(app, memory, submit, now)
+        except Exception:  # noqa: BLE001
+            log.exception("选品雷达运行失败")
+        finally:
+            lock.release()
+
+    def run(now: datetime) -> None:
+        if lock.acquire(blocking=False):
+            threading.Thread(target=work, args=(now,), daemon=True).start()
+
+    return run
+
+
 def health_check_job(store: Store, feishu: Any, owner_open_id: str, miaoshou: Any) -> Callable[[datetime], None]:
     """适配器每日健康检查（DESIGN.md 6.5）：只读冒烟，失败当天告警一次。"""
 
@@ -82,6 +104,8 @@ def build_jobs(app: Any, memory: Any, miaoshou: Any | None, intake: Any = None) 
     report = DailyReport(app, app.settings.daily_report, getattr(intake, "dispatcher", None))
     jobs.append(Job("daily_report", timedelta(minutes=10),
                     lambda now: (lambda day: report.run(day) if day else None)(report.due(now))))
+    jobs.append(Job("radar", timedelta(seconds=30), radar_job(app, memory, getattr(intake, "dispatcher", None))))
+    jobs.append(Job("serve_heartbeat", timedelta(seconds=20), lambda now: app.store.kv_set("serve:heartbeat", now.isoformat())))
     if miaoshou is not None and getattr(app, "shadow", None) is not None:
         jobs.append(Job("shadow_collect_publish", timedelta(hours=1), lambda now: app.shadow.collect_publish(miaoshou, now)))
     if miaoshou is not None:

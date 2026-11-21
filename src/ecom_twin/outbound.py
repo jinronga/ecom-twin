@@ -18,6 +18,7 @@ import os
 import re
 from typing import Any
 
+from .feishu import FeishuError
 from .memory import SECRET_PATTERN
 
 KIND_PERMISSION = {"receipt": "reply", "report": "reply", "ask": "ask", "notify": "notify"}
@@ -142,6 +143,12 @@ class Outbound:
     def to_task(self, task_id: str, text: str, kind: str = "report", reply_to: str | None = None) -> str:
         """发给任务的来源会话。返回消息 ID（用于把后续回复并回任务）。"""
         task = self.app.store.get_task(task_id)
+        if task.source.value == "控制台对话":
+            # 「问分身」对话：提问、中途汇报都写回对话框，不发飞书（负责人在对话框里回答，回答会续跑这个任务）
+            text, _ = sanitize(text)
+            mid = f"chat:{task_id}:{self.app.store.add_chat_message(task_id, 'assistant', text)}"
+            self.app.store.add_outbound(task_id, "", "", kind, "控制台对话", text, mid)
+            return mid
         owner = task.owner or self.app.settings.feishu.owner_open_id
         target_msg = reply_to or task.origin_message_id
         in_group = task.origin_chat_type == "group"
@@ -153,12 +160,23 @@ class Outbound:
                 # 群里只发前一段，完整的私聊负责人：群里的人要的是结论，负责人要的是全部
                 self.app.feishu.send_text(owner, f"[{task_id} 发到群里的内容超过 {MAX_GROUP_CHARS} 字，完整版如下]\n{text}")
                 text = text[:MAX_GROUP_CHARS - 20].rstrip() + "…（完整内容已私聊负责人）"
-            msg_id = self.app.feishu.reply_text(target_msg, text)
-            delivered = "群 thread" if in_group else "私聊 thread"
+            msg_id, threaded = self._reply(task_id, target_msg, text)
+            delivered = ("群话题" if threaded else "群 thread") if in_group else ("私聊话题" if threaded else "私聊 thread")
         else:
-            prefix = f"[来自群 {task.origin_chat_id}，该群未开放{kind}代发权限，改为私聊你]\n" if in_group else ""
-            msg_id = self.app.feishu.send_text(owner, prefix + text)
-            delivered = "私聊负责人"
+            # 照数字分身：从别的会话来的活，在私聊里单开一条，之后同一个任务的汇报都跟在这一条下面
+            anchor = self.app.store.kv_get(f"dm_anchor:{task_id}")
+            msg_id = ""
+            if anchor:
+                try:
+                    msg_id, threaded = self._reply(task_id, anchor, text)
+                    delivered = "私聊负责人（跟在这个任务的那一条下面）"
+                except FeishuError as e:  # 那一条被撤回、删掉或回复不了了：改发新的一条，并以它为新的锚点
+                    self.app.store.audit("task", task_id, "dm_anchor_lost", "system", {"error": str(e)[:200]})
+            if not msg_id:
+                prefix = f"[{task_id} 来自群 {task.origin_chat_id}，该群未开放{kind}代发权限，改为私聊你]\n" if in_group else ""
+                msg_id = self.app.feishu.send_text(owner, prefix + text)
+                self.app.store.kv_set(f"dm_anchor:{task_id}", msg_id)
+                delivered = "私聊负责人"
         self.app.store.add_outbound(task_id, task.origin_chat_id, target_msg or "", kind, delivered, text, msg_id)
         self.app.store.log_message({"message_id": msg_id, "chat_type": task.origin_chat_type or "p2p",
                                     "content": text}, "outbound", task_id)
@@ -166,8 +184,24 @@ class Outbound:
             self.app.store.audit("task", task_id, f"outbound_{kind}", "system", {"delivered": delivered})
         return msg_id
 
+    def _reply(self, task_id: str, message_id: str, text: str) -> tuple[str, bool]:
+        """按配置用话题回复；会话不支持话题（如飞书报 230071）就退回普通引用回复，回复不丢。"""
+        if not self.app.settings.feishu.reply_in_thread:
+            return self.app.feishu.reply_text(message_id, text), False
+        try:
+            return self.app.feishu.reply_text(message_id, text, in_thread=True), True
+        except FeishuError as e:
+            self.app.store.audit("task", task_id, "thread_reply_fallback", "system", {"error": str(e)[:200]})
+            return self.app.feishu.reply_text(message_id, text), False
+
     def image_to(self, task_id: str, message_id: str, path: str) -> str:
-        msg_id = self.app.feishu.reply_image(message_id, path)
+        if self.app.settings.feishu.reply_in_thread:
+            try:
+                msg_id = self.app.feishu.reply_image(message_id, path, in_thread=True)
+            except FeishuError:
+                msg_id = self.app.feishu.reply_image(message_id, path)
+        else:
+            msg_id = self.app.feishu.reply_image(message_id, path)
         self.app.store.add_outbound(task_id, "", message_id, "image", "thread", path, msg_id)
         self.app.store.link_report(msg_id, task_id)
         return msg_id

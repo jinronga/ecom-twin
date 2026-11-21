@@ -28,7 +28,7 @@ from .store import Store, utcnow
 
 PAGE = Path(__file__).parent / "web" / "console.html"
 COOKIE = "ecom_twin_console"
-MEMORY_TYPES = ["experience", "calendar", "fact", "preference"]
+MEMORY_TYPES = ["experience", "calendar", "fact", "preference", "selection", "radar"]
 
 
 def task_json(task) -> dict[str, Any]:
@@ -133,6 +133,348 @@ class ConsoleApp:
         return {"profile": profile.key, "max_chars": profile.max_chars, "voice_samples": profile.voice_samples,
                 "notes": profile.notes, "passed": not problems, "problems": problems, "risk_level": level, "risk_reasons": reasons}
 
+    def _selection_ctx(self, region: str, platform: str):
+        from .selection import load_playbooks, match_playbook
+        playbooks, errors = load_playbooks(self.memory.all())
+        return match_playbook(playbooks, region, platform), errors
+
+    def _fx(self) -> dict:
+        from .research import fx_rate
+        try:
+            return {"value": (fx := fx_rate(self.store))["rate"], "source": f"{fx['source']} {fx['date']}"}
+        except Exception as e:  # noqa: BLE001 —— 取不到汇率就让人手填，不编一个数
+            return {"value": None, "source": f"实时汇率取不到（{str(e)[:80]}），请手动填写"}
+
+    def selection_defaults(self, query: dict[str, str]) -> tuple[int, Any]:
+        """试算的自动填充：剧本的国家和平台、实时汇率、平台佣金率、按重量估的运费、按调研快照估的需求热度。"""
+        from datetime import datetime, timezone
+        from .research import estimate_demand
+        from .selection import SELECTION_TYPE, PlaybookError, estimate_shipping, parse_rules
+        current = self.memory.get(query.get("slug", "")) if query.get("slug") else None
+        options = None
+        if current is not None and current.type == SELECTION_TYPE:
+            try:
+                rules = parse_rules(current.body)
+                options = {"regions": rules.regions, "platforms": rules.platforms}
+            except PlaybookError:
+                options = None
+        region, platform = (query.get("region") or "").upper(), (query.get("platform") or "").lower()
+        if not region and options:
+            region = next((r for r in options["regions"] if r != "*"), "")
+        if not region:
+            return 200, {"options": options, "note": "先选国家"}
+        try:
+            playbook, _ = self._selection_ctx(region, platform)
+        except PlaybookError as e:
+            return 400, {"error": str(e), "options": options}
+        rules = playbook.rules
+        weight = query.get("weight")
+        weight = float(weight) if weight not in (None, "") else None
+        rate = rules.commission_rates.get(platform)
+        ship = estimate_shipping(rules, weight)
+        snapshot = self.store.latest_research_snapshot(region, playbook.name)
+        demand = estimate_demand(snapshot, query.get("keyword", ""))
+        age = (datetime.now(timezone.utc) - snapshot["created_at"]).days if snapshot else None
+        return 200, {
+            "playbook": playbook.name, "region": region, "platform": platform, "options": options,
+            "exchange_rate": self._fx(),
+            "commission_rate": {"value": rate, "source": f"剧本里 {platform} 的佣金率（初始值，以平台后台为准）"}
+            if rate is not None else {"value": None, "source": "剧本没配这个平台的佣金率，请手动填写"},
+            "shipping": {"value": ship, "source": f"剧本估算：首重 {rules.shipping_base or 0:g} + 每公斤 {rules.shipping_per_kg:g} 美元"}
+            if ship is not None else {"value": None, "source": "填了重量才能估；剧本没配运费就请手动填写"},
+            "demand": {"value": demand["score"], "source": demand["note"], "matches": demand["matches"],
+                       "snapshot": snapshot["id"] if snapshot else None, "age_days": age,
+                       "stale": snapshot is None or age > rules.research_max_age_days},
+        }
+
+    def selection_discover(self, body: dict[str, Any]) -> tuple[int, Any]:
+        """控制台「找方向」：扫一遍品类库，代码打分排序（会访问公开接口，几十秒）。"""
+        from .discovery import discover
+        from .selection import PlaybookError
+        region, platform = (body.get("region") or "").upper(), (body.get("platform") or "").lower()
+        try:
+            playbook, _ = self._selection_ctx(region, platform)
+        except PlaybookError as e:
+            return 400, {"error": str(e)}
+        split = lambda v: [x.strip() for x in (v if isinstance(v, list) else re.split(r"[,，、\n]", v or "")) if x.strip()]  # noqa: E731
+        result = discover(self.store, playbook, region, platform, exclude=split(body.get("exclude")),
+                          focus=split(body.get("focus")), top=int(body.get("top") or 8))
+        self.store.audit("research", result["快照"], "discover", "console", {"region": region})
+        return 200, result
+
+    def selection_research(self, body: dict[str, Any]) -> tuple[int, Any]:
+        """在控制台直接做一次调研（会访问公开接口），把搜索词也当种子词查，查完就能估需求热度。"""
+        from .research import run_research
+        from .selection import PlaybookError
+        region, platform = (body.get("region") or "").upper(), (body.get("platform") or "").lower()
+        try:
+            playbook, _ = self._selection_ctx(region, platform)
+        except PlaybookError as e:
+            return 400, {"error": str(e)}
+        settings = settings_from_raw(load_raw(self.settings_path))
+        keyword = (body.get("keyword") or "").strip()
+        snap = run_research(self.store, playbook, region, platform, "", extra_seeds=[keyword] if keyword else [],
+                            third_party={"url": settings.research.third_party_url,
+                                         "key_env": settings.research.third_party_key_env})
+        self.store.audit("research", snap["id"], "created", "console", {"region": region, "keyword": keyword})
+        return 200, {"id": snap["id"], "sources": {k: v.get("status") for k, v in snap["data"].items()},
+                     "new_terms": snap["new_terms"][:20]}
+
+    # ---- 选品雷达 ----
+    def _task_app(self):
+        """控制台进程里建任务、排队用：任务服务每秒领一次队列，看板同步也由它负责。"""
+        from types import SimpleNamespace
+        from .board import BoardSync
+        from .feishu import FakeFeishu
+        from .tasks import TaskService
+        settings = settings_from_raw(load_raw(self.settings_path))
+        return SimpleNamespace(store=self.store, settings=settings,
+                               tasks=TaskService(self.store, BoardSync(self.store, FakeFeishu(), settings.feishu)))
+
+    def serve_alive(self) -> bool:
+        from .radar import serve_alive
+        return serve_alive(self.store)
+
+    def radar_view(self) -> dict[str, Any]:
+        from .radar import describe_schedule, load_rules, next_run
+        rules, errors = load_rules(self.memory.all())
+        slugs = {m.name: m.slug for m in self.memory.all()}
+        out = []
+        for r in rules:
+            last = self.store.last_radar_run(r.name)
+            nxt = next_run(r, self.store) if r.enabled else None
+            out.append({"name": r.name, "slug": slugs.get(r.name, ""), "schedule": r.schedule,
+                        "describe": describe_schedule(r.schedule), "timezone": r.timezone, "regions": r.regions,
+                        "platform": r.platform, "watch": r.watch, "modifiers": r.modifiers, "enabled": r.enabled,
+                        "expires_at": r.expires_at.isoformat() if r.expires_at else "", "max_leads": r.max_leads,
+                        "next_run": nxt.isoformat() if nxt else None,
+                        "next_run_local": f"{_WEEK[nxt.astimezone(r.tz).weekday()]} {nxt.astimezone(r.tz):%m-%d %H:%M}" if nxt else "",
+                        "pending": bool(self.store.kv_get(f"radar:trigger:{r.name}")),
+                        "last_run": {**last, "started_at": last["started_at"].isoformat(),
+                                     "finished_at": last["finished_at"].isoformat() if last["finished_at"] else None}
+                        if last else None})
+        runs = [{**x, "started_at": x["started_at"].isoformat(),
+                 "finished_at": x["finished_at"].isoformat() if x["finished_at"] else None}
+                for x in self.store.list_radar_runs(limit=30)]
+        return {"rules": out, "errors": errors, "runs": runs, "serve_alive": self.serve_alive()}
+
+    def radar_create(self, body: dict[str, Any]) -> tuple[int, Any]:
+        """控制台「新建雷达」：表单里的预设已经在页面上拼成了 cron，这里生成规则正文存成记忆。"""
+        from .radar import describe_schedule, render_rule
+        name = (body.get("name") or "").strip()
+        if not name:
+            return 400, {"error": "给规则起个名字，比如「雷达-沙特斋月」"}
+        regions = [r.strip().upper() for r in (body.get("regions") or []) if str(r).strip()]
+        watch = [w.strip() for w in (body.get("watch") or []) if str(w).strip()]
+        schedule = (body.get("schedule") or "").strip()
+        text = render_rule(name, schedule, body.get("timezone") or "Asia/Shanghai", regions, watch,
+                           (body.get("platform") or "").strip().lower(),
+                           [m.strip() for m in (body.get("modifiers") or []) if str(m).strip()],
+                           int(body.get("max_leads") or 3), (body.get("expires_at") or "").strip(), body.get("note") or "")
+        desc = (f"选品雷达规则：{describe_schedule(schedule)}盯{'、'.join(regions)}的{'、'.join(watch[:3])}"
+                "，有新方向、节日窗口、痛点词就出线索")[:120]
+        try:
+            m = self.memory.save(name, desc, "radar", text, actor="console")
+        except MemoryError as e:
+            return 400, {"error": str(e)}
+        return 200, {"slug": m.slug}
+
+    def radar_trigger(self, slug: str) -> tuple[int, Any]:
+        from .radar import request_trigger
+        m = self.memory.get(slug)
+        if m is None or m.type != "radar":
+            return 404, {"error": "没有这条雷达规则"}
+        request_trigger(self.store, m.name)
+        self.store.audit("radar", m.name, "triggered", "console")
+        alive = self.serve_alive()
+        return 200, {"ok": True, "serve_alive": alive,
+                     "note": "已排上，任务服务一分钟内会执行" if alive else "已排上，但任务服务没在运行，启动服务后才会执行"}
+
+    def radar_toggle(self, slug: str, body: dict[str, Any]) -> tuple[int, Any]:
+        m = self.memory.get(slug)
+        if m is None or m.type != "radar":
+            return 404, {"error": "没有这条雷达规则"}
+        enabled = bool(body.get("enabled"))
+        new_body, n = re.subn(r"(?m)^enabled\s*=\s*(true|false)\b.*$", f"enabled = {'true' if enabled else 'false'}", m.body)
+        if not n:
+            new_body = re.sub(r"(```toml\s*\n)", rf"\1enabled = {'true' if enabled else 'false'}\n", m.body, count=1)
+        try:
+            self.memory.save(m.name, m.description, m.type, new_body, slug=m.slug, actor="console")
+        except MemoryError as e:
+            return 400, {"error": str(e)}
+        return 200, {"enabled": enabled}
+
+    def lead_update(self, lid: str, body: dict[str, Any]) -> tuple[int, Any]:
+        try:
+            lead = self.store.update_lead(lid, body.get("status", ""), body.get("reason", ""))
+        except KeyError as e:
+            return 404, {"error": str(e)}
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        self.store.audit("lead", lid, f"status:{lead['status']}", "console", {"reason": lead["reason"]})
+        return 200, {"lead": _jsonable(lead)}
+
+    def lead_convert(self, lid: str) -> tuple[int, Any]:
+        """线索转选品：建一个选品任务排进队列，任务服务接手，按剧本调研打分。"""
+        from .paths import WORKSPACES_DIR
+        from .radar import convert_lead
+        try:
+            r = convert_lead(self._task_app(), lid, WORKSPACES_DIR)
+        except KeyError as e:
+            return 404, {"error": str(e).strip("'")}
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return 200, r
+
+    # ---- 问分身（控制台对话） ----
+    CHAT_PREFIX = ("负责人在控制台「问分身」对话框里说：\n{msg}\n\n"
+                   "（这是对话，回复会直接显示在对话框里：先回答，再说做了什么，口语、简短。"
+                   "要查情况先用 workspace_overview、lead_list、radar_list；要建雷达规则用 radar_rule_propose，"
+                   "它只生成草稿，负责人在对话框里点「采纳」才生效。改线索、转选品、立即运行雷达要负责人明确说了才做。"
+                   "问「做什么品」「有什么值得做」而手上没有候选时，按 product-discovery 先找方向（selection_discover），"
+                   "不要因为缺货源价、没配妙手就停下来反问；最多问一个真正卡住的问题，其余按剧本默认值先做，"
+                   "在回复里说明用了哪些默认值。网页打不开就跳过、写一句，不要反复重试。）")
+
+    def chat_list(self) -> dict[str, Any]:
+        from .runtime import RUNTIMES
+        settings = settings_from_raw(load_raw(self.settings_path))
+        convs = [{"id": t.id, "title": t.title, "runtime": t.runtime, "status": t.status.value,
+                  "updated_at": t.updated_at.isoformat() if t.updated_at else None}
+                 for t in self.store.list_conversations()]
+        from .runtime.cli_check import CLI_SPECS
+        runtimes = [{"key": k, "label": CLI_SPECS[k].label if k in CLI_SPECS else k, "default": k == settings.runtime.default}
+                    for k in RUNTIMES]
+        return {"conversations": convs, "runtimes": runtimes, "serve_alive": self.serve_alive()}
+
+    def chat_send(self, body: dict[str, Any]) -> tuple[int, Any]:
+        from .dispatcher import enqueue_prompt
+        from .models import TaskSource
+        from .paths import WORKSPACES_DIR
+        from .runtime import RUNTIMES
+        from .tasks import title_from_text
+        msg = (body.get("message") or "").strip()
+        if not msg:
+            return 400, {"error": "说点什么吧"}
+        app = self._task_app()
+        cid = (body.get("conversation_id") or "").strip()
+        if cid:
+            task = self.store.get_task(cid)
+            if task is None or task.source != TaskSource.CHAT:
+                return 404, {"error": "没有这个对话"}
+            resume = True
+        else:
+            runtime = body.get("runtime") or app.settings.runtime.default
+            if runtime not in RUNTIMES:
+                return 400, {"error": f"不认识的底座：{runtime}"}
+            task = app.tasks.create(title_from_text(msg), TaskSource.CHAT, "待定", owner=app.settings.feishu.owner_open_id)
+            task.runtime = runtime
+            self.store.save_task(task)
+            resume = False
+        self.store.add_chat_message(task.id, "user", msg)
+        enqueue_prompt(app, WORKSPACES_DIR, task.id, self.CHAT_PREFIX.format(msg=msg), resume=resume)
+        return 200, {"conversation_id": task.id, "serve_alive": self.serve_alive()}
+
+    def chat_get(self, cid: str) -> tuple[int, Any]:
+        from .models import TaskSource
+        task = self.store.get_task(cid)
+        if task is None or task.source != TaskSource.CHAT:
+            return 404, {"error": "没有这个对话"}
+        q = self.store.get_task_queue(cid) or {}
+        busy = q.get("state") in ("queued", "running") or task.status.value in ("排队中", "进行中", "执行中")
+        drafts = [{"id": d["id"], "name": d["name"], "type": d["type"], "status": d["status"], "body": d["body"]}
+                  for d in self.store.drafts_for_task(cid)]
+        return 200, {"id": cid, "title": task.title, "runtime": task.runtime, "status": task.status.value,
+                     "busy": busy, "queue_state": q.get("state", ""), "drafts": drafts,
+                     "messages": [{"role": m["role"], "text": m["text"], "created_at": m["created_at"].isoformat()}
+                                  for m in self.store.list_chat_messages(cid)]}
+
+    # ---- 看板拖拽（照 Multica：任意卡片拖到任意一列改状态，同一列里拖动排序） ----
+    RUNNING = ("进行中", "执行中")
+
+    def task_reply(self, task_id: str, body: dict[str, Any]) -> tuple[int, Any]:
+        """任务详情里继续输入：作为补充交给分身，在同一个会话里接着跑（续跑）。
+        控制台对话的回复写回对话记录；飞书来的任务，分身的汇报照常回飞书原来的 thread。"""
+        from .dispatcher import enqueue_prompt
+        from .models import TaskSource
+        from .paths import WORKSPACES_DIR
+        task = self.store.get_task(task_id)
+        if task is None:
+            return 404, {"error": "任务不存在"}
+        text = (body.get("text") or "").strip()
+        if not text:
+            return 400, {"error": "说点什么吧"}
+        self.store.add_chat_message(task_id, "user", text)
+        prompt = (self.CHAT_PREFIX.format(msg=text) if task.source == TaskSource.CHAT
+                  else f"负责人在控制台的任务详情里补充：\n{text}\n\n按这条接着处理，做完照常汇报。")
+        enqueue_prompt(self._task_app(), WORKSPACES_DIR, task_id, prompt, resume=True)
+        self.store.audit("task", task_id, "console_reply", "console")
+        alive = self.serve_alive()
+        where = "回复会显示在这里" if task.source == TaskSource.CHAT else "分身的汇报会回到飞书原来的 thread，这里也能看到交付结果"
+        return 200, {"ok": True, "note": ("已交给分身，" + where) if alive else "已排上，但任务服务没在运行，启动后才会执行"}
+
+    def task_move(self, task_id: str, body: dict[str, Any]) -> tuple[int, Any]:
+        from .dispatcher import enqueue_prompt
+        from .models import TaskStatus
+        from .paths import WORKSPACES_DIR
+        task = self.store.get_task(task_id)
+        if task is None:
+            return 404, {"error": "任务不存在"}
+        to = body.get("to", "")
+        order = [str(x) for x in body.get("order") or []]
+        same_column = to == body.get("from")
+        if task.status.value in self.RUNNING and not same_column:
+            return 400, {"error": f"{task_id} 分身正在跑，这一轮结束会覆盖你改的状态，等它跑完再拖"}
+        note = "已调整顺序"
+        if not same_column:
+            app = self._task_app()
+            dequeued = self.store.cancel_task_queue(task_id) if to != "running" else False
+            if to == "pending":
+                app.tasks.set_status(task_id, TaskStatus.PENDING)
+                note = "已放回待处理，不会自动跑"
+            elif to == "running":
+                enqueue_prompt(app, WORKSPACES_DIR, task_id, "负责人在控制台看板上把任务拖到了「进行中」，请接着处理。", resume=True)
+                note = "已让分身接着处理" + ("" if self.serve_alive() else "，但任务服务没在运行，启动后才会执行")
+            elif to == "waiting":
+                app.tasks.set_status(task_id, TaskStatus.WAITING, blocker=task.blocker or "负责人在看板上标为待确认")
+                note = "已标为待确认"
+            elif to == "closed":
+                app.tasks.set_status(task_id, TaskStatus.CLOSED)
+                note = "已关闭"
+            elif to == "failed":
+                app.tasks.set_status(task_id, TaskStatus.FAILED, blocker="负责人在看板上标为需关注")
+                note = "已标为需关注"
+            else:
+                return 400, {"error": f"不认识的列：{to}"}
+            if dequeued:
+                note += "，这次排队已取消"
+            self.store.audit("task", task_id, f"moved:{to}", "console", {"from": task.status.value})
+        if order:
+            self.store.set_board_order(order)
+        return 200, {"ok": True, "note": note}
+
+    def selection_preview(self, body: dict[str, Any]) -> tuple[int, Any]:
+        """选品剧本试算：给一个样例商品，看匹配哪份剧本、卡在哪条门槛、打几分。只算不存。"""
+        from .selection import PlaybookError, load_playbooks, match_playbook, score_candidate
+        playbooks, errors = load_playbooks(self.memory.all())
+        try:
+            playbook = match_playbook(playbooks, body.get("region", ""), body.get("platform", ""))
+        except PlaybookError as e:
+            return 400, {"error": str(e) + (f"（另有剧本规则写错：{'；'.join(errors)}）" if errors else "")}
+        from .selection import apply_defaults
+        candidate = body.get("candidate") if isinstance(body.get("candidate"), dict) else {}
+        candidate, filled = apply_defaults(candidate, playbook.rules, body.get("platform", ""))
+        global_min = settings_from_raw(load_raw(self.settings_path)).limits.min_margin_rate
+        try:
+            result = score_candidate(candidate, playbook.rules, global_min)
+            result["filled"] = filled
+        except (TypeError, ValueError) as e:
+            return 400, {"error": f"样例商品的数字填得不对：{e}"}
+        recent = [{"id": s["id"], "region": s["region"], "created_at": s["created_at"].isoformat(),
+                   "new_terms": s["new_terms"][:10],
+                   "sources": {k: v.get("status") for k, v in s["data"].items()}}
+                  for s in self.store.list_research_snapshots(50) if s["playbook"] == playbook.name][:5]
+        return 200, {"playbook": playbook.name, "version": playbook.version, "result": result, "snapshots": recent}
+
     def config_update(self, body: dict[str, Any]) -> tuple[int, Any]:
         f = field_for(body.get("section", ""), body.get("key", ""))
         if f is None:
@@ -156,7 +498,9 @@ class ConsoleApp:
         except (TypeError, ValueError) as e:
             return 400, {"error": f"配置无法加载：{e}"}
         if errors:
-            return 400, {"error": "保存后配置会出错：" + "；".join(errors)}
+            hint = ("。负责人 Open ID、店铺白名单、飞书凭证请先在配置页填写：终端运行 ecom-twin setup"
+                    if any("feishu." in e or "allowed_shops" in e for e in errors) else "")
+            return 400, {"error": "保存后配置会出错：" + "；".join(errors) + hint}
         if f.high_risk and not body.get("confirm"):
             return 200, {"need_confirm": True, "label": f.label, "before": before, "after": value}
         self._overrides_path().write_text(
@@ -170,7 +514,12 @@ class ConsoleApp:
         parts = [unquote(p) for p in path.split("/") if p][1:]  # 去掉 "api"；中文标识在 URL 里是编码过的
         try:
             if parts == ["tasks"] and method == "GET":
-                return 200, {"tasks": [task_json(task) for task in self.store.list_tasks()]}
+                ranks = self.store.board_ranks()
+                return 200, {"tasks": [{**task_json(task), "rank": ranks.get(task.id)} for task in self.store.list_tasks()]}
+            if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "reply" and method == "POST":
+                return self.task_reply(parts[1], body)
+            if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "move" and method == "POST":
+                return self.task_move(parts[1], body)
             if len(parts) == 2 and parts[0] == "tasks" and method == "GET":
                 task = self.store.get_task(parts[1])
                 if task is None:
@@ -178,7 +527,12 @@ class ConsoleApp:
                 steps = [{"name": s.name, "status": s.status.value, "summary": s.summary,
                           "error": s.error, "started_at": s.started_at, "ended_at": s.ended_at}
                          for s in self.store.list_steps(task.id)]
-                return 200, {"task": task_json(task), "steps": steps}
+                q = self.store.get_task_queue(task.id) or {}
+                messages = [{"role": m["role"], "text": m["text"], "created_at": m["created_at"].isoformat()}
+                            for m in self.store.list_chat_messages(task.id)]
+                return 200, {"task": task_json(task), "steps": steps, "messages": messages,
+                             "busy": q.get("state") in ("queued", "running"), "queue_state": q.get("state", ""),
+                             "serve_alive": self.serve_alive()}
             if parts == ["memories"] and method == "GET":
                 graph = self.memory.graph()
                 return 200, {"memories": [memory_json(m, graph) for m in self.memory.all()], "types": MEMORY_TYPES,
@@ -254,6 +608,34 @@ class ConsoleApp:
                 return self.cs_profile_delete(parts[1])
             if parts == ["cs-preview"] and method == "POST":
                 return 200, self.cs_preview(body)
+            if parts == ["selection-preview"] and method == "POST":
+                return self.selection_preview(body)
+            if parts == ["chat"] and method == "GET":
+                return 200, self.chat_list()
+            if parts == ["chat"] and method == "POST":
+                return self.chat_send(body)
+            if len(parts) == 2 and parts[0] == "chat" and method == "GET":
+                return self.chat_get(parts[1])
+            if parts == ["radar"] and method == "GET":
+                return 200, self.radar_view()
+            if parts == ["radar"] and method == "POST":
+                return self.radar_create(body)
+            if len(parts) == 3 and parts[0] == "radar" and parts[2] == "trigger" and method == "POST":
+                return self.radar_trigger(parts[1])
+            if len(parts) == 3 and parts[0] == "radar" and parts[2] == "toggle" and method == "POST":
+                return self.radar_toggle(parts[1], body)
+            if parts == ["leads"] and method == "GET":
+                return 200, {"leads": [_jsonable(x) for x in self.store.list_leads(query.get("status") or None)]}
+            if len(parts) == 2 and parts[0] == "leads" and method == "POST":
+                return self.lead_update(parts[1], body)
+            if len(parts) == 3 and parts[0] == "leads" and parts[2] == "convert" and method == "POST":
+                return self.lead_convert(parts[1])
+            if parts == ["selection-defaults"] and method == "GET":
+                return self.selection_defaults(query)
+            if parts == ["selection-discover"] and method == "POST":
+                return self.selection_discover(body)
+            if parts == ["selection-research"] and method == "POST":
+                return self.selection_research(body)
             if parts == ["cs-drafts"] and method == "GET":
                 return 200, {"drafts": self.store.list_cs_drafts(query.get("status") or None),
                              "stats": self.store.cs_stats()}
@@ -273,6 +655,13 @@ class ConsoleApp:
 
 
 # 角色（DESIGN.md 12：运营只能看和审阅，负责人才能改硬上限和代发权限）
+_WEEK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
+def _jsonable(row: dict) -> dict:
+    return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in row.items()}
+
+
 ROLE_OWNER, ROLE_REVIEWER = "负责人", "运营"
 
 
@@ -281,12 +670,15 @@ def allowed(role: str, method: str, path: str) -> bool:
     if role == ROLE_OWNER or method == "GET":
         return True
     parts = [p for p in path.split("/") if p][1:]
-    if method == "POST" and parts == ["cs-preview"]:  # 预览只算不改，运营也能用
+    if method == "POST" and parts in (["cs-preview"], ["selection-preview"]):  # 预览、试算只算不改，运营也能用
+        return True
+    if method == "POST" and len(parts) == 2 and parts[0] == "leads":  # 线索由运营跟进
         return True
     if method != "POST" or len(parts) != 3:
         return False
-    # 审阅记忆草稿；客服回复是运营复制发送的，发送结果也由运营记
-    return (parts[0] == "drafts" and parts[2] in ("approve", "reject")) or (parts[0] == "cs-drafts" and parts[2] == "decide")
+    # 审阅记忆草稿；客服回复是运营复制发送的，发送结果也由运营记；线索转选品也由运营做
+    return ((parts[0] == "drafts" and parts[2] in ("approve", "reject")) or (parts[0] == "cs-drafts" and parts[2] == "decide")
+            or (parts[0] == "leads" and parts[2] == "convert"))
 
 
 def make_handler(app: ConsoleApp, token: str, review_token: str = "") -> type[BaseHTTPRequestHandler]:
@@ -358,7 +750,13 @@ def make_handler(app: ConsoleApp, token: str, review_token: str = "") -> type[Ba
                 except json.JSONDecodeError:
                     self._send(400, {"error": "请求体不是合法 JSON"})
                     return
-            status, payload = app.route(method, url.path, query, body)
+            try:
+                status, payload = app.route(method, url.path, query, body)
+            except (ValueError, TypeError) as e:  # 输入格式不对（数字填成文字等）：给页面一个能看懂的 400
+                status, payload = 400, {"error": f"输入不对：{e}"}
+            except Exception as e:  # noqa: BLE001 —— 外网调研等出错也要回一个 JSON，不能让连接直接断
+                app.store.audit("console", url.path, "error", role, {"error": f"{type(e).__name__}: {e}"[:300]})
+                status, payload = 500, {"error": f"处理失败：{type(e).__name__}: {str(e)[:200]}"}
             self._send(status, payload)
 
         def do_GET(self) -> None:  # noqa: N802

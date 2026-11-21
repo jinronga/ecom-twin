@@ -94,7 +94,7 @@ class NativeFeishu(LarkCliFeishu):
         return {'ok': True, 'bot_name': bot.get('app_name') or bot.get('name') or '飞书机器人',
                 'message': '应用认证和机器人信息读取成功。消息订阅需在飞书后台开启长连接并实测。'}
 
-    def reply_image(self, message_id: str, image_path: str) -> str:
+    def reply_image(self, message_id: str, image_path: str, in_thread: bool = False) -> str:
         """上传图片拿 image_key，再回复到消息的 thread（证据截图）。"""
         path = Path(image_path)
         boundary = 'ecomtwin' + os.urandom(8).hex()
@@ -113,8 +113,10 @@ class NativeFeishu(LarkCliFeishu):
         image_key = data.get('image_key') if isinstance(data, dict) else None
         if not image_key:
             raise FeishuError('上传图片失败：没有返回 image_key')
-        data = self._api('POST', f'/open-apis/im/v1/messages/{message_id}/reply',
-                         data={'msg_type': 'image', 'content': json.dumps({'image_key': image_key})})
+        body = {'msg_type': 'image', 'content': json.dumps({'image_key': image_key})}
+        if in_thread:
+            body['reply_in_thread'] = True
+        data = self._api('POST', f'/open-apis/im/v1/messages/{message_id}/reply', data=body)
         return data['message_id']
 
     def download_image(self, message_id: str, image_key: str, destination: str | Path) -> Path:
