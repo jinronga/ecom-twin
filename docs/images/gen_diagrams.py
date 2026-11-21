@@ -1,4 +1,4 @@
-"""生成 README 用的两张 SVG：功能模块图、上品数据链路泳道图。
+"""生成 README 用的三张 SVG：功能模块图、上品数据链路泳道图、工作原理图。
 
 改图就改这个脚本，再运行 python3 docs/images/gen_diagrams.py，不要手改 SVG。
 """
@@ -203,7 +203,62 @@ def flow():
     return s.render()
 
 
+def workflow():
+    """工作原理：一张图看清任务入口、Agent 工具边界和结果留存。"""
+    s = Svg(1200, 830, "工作原理图：飞书或定时任务进入任务入口，交给 Agent；Agent 通过 MCP 查询或修改暂存区，"
+                       "写店铺必须提交提案并经人工审批后由执行器执行；结果核验后回复飞书，并写入 SQLite 和业务记忆")
+    tones = {
+        "source": ("#eef6ff", "#4f7fb8", "#18324b"),
+        "control": ("#fff4dc", "#b47a18", "#4d3408"),
+        "direct": ("#eef8ee", "#4d8a55", "#173d1e"),
+        "approval": ("#fceceb", "#b45852", "#4e1b18"),
+        "output": ("#f3effc", "#7758a8", "#2e1d47"),
+    }
+
+    def node(x, y, w, h, title, sub, tone, rx=9):
+        fill, stroke, color = tones[tone]
+        s.add(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}" fill="{fill}" stroke="{stroke}" stroke-width="2"/>')
+        s.text(x + w / 2, y + (h / 2 - 2 if sub else h / 2 + 5), title, 14, 700, color)
+        if sub:
+            s.text(x + w / 2, y + h / 2 + 17, sub, 11, 400, MUTED)
+
+    node(450, 24, 300, 56, "飞书消息 / 定时任务", "私聊 · 群消息 · 日报 · 雷达", "source")
+    node(350, 112, 500, 58, "任务入口", "过滤 · 合并 · 引用关系 · 自动聊天上下文", "source")
+    node(400, 202, 400, 58, "Agent Runtime", "Codex · Claude Code · Cursor · OpenCode", "control")
+    node(450, 292, 300, 54, "判断本轮要做什么", "由任务和工具边界决定", "control")
+    node(40, 400, 340, 64, "MCP 只读工具", "查询 · 分析 · 证据 · 店铺 · ERP · 记忆 · SOP", "direct")
+    node(430, 400, 340, 64, "MCP 写入工具", "起草 · 暂存区修改 · 合规检查 · 留痕", "direct")
+    node(820, 400, 340, 58, "MCP 提交提案", "发布 · 提交 · 删除等对外动作", "approval")
+    node(820, 490, 340, 58, "人工审批", "限额 · 有效期 · 风险 · 双人审批", "approval")
+    node(820, 580, 340, 58, "执行器", "复核数据与硬上限后执行", "approval")
+    node(390, 660, 420, 62, "结果核验", "成功 / 失败 / 证据 / 待人工确认", "output")
+    node(40, 748, 340, 60, "飞书交付", "话题回复 · 图片 · 审批卡片", "output")
+    node(430, 748, 340, 60, "SQLite 留痕", "任务 · 步骤 · 审计 · 成本", "output")
+    node(820, 748, 340, 60, "Markdown 记忆", "SOP · 业务经验 · 选品剧本", "output")
+
+    s.path("M600,80 L600,112")
+    s.path("M600,170 L600,202")
+    s.path("M600,260 L600,292")
+    s.path("M600,346 L600,372 L210,372 L210,400", label="查询 / 证据", lx=392, ly=364)
+    s.path("M600,346 L600,400", label="草稿 / 暂存", lx=608, ly=380, lanchor="start")
+    s.path("M600,346 L600,372 L990,372 L990,400", accent=True, label="对外执行", lx=805, ly=364)
+    s.path("M990,458 L990,490", accent=True)
+    s.path("M990,548 L990,580", accent=True, label="批准", lx=998, ly=566, lanchor="start")
+    s.path("M1160,519 L1184,519 L1184,319 L750,319", accent=True, dashed=True,
+           label="修改 / 拒绝后回到 Agent", lx=1060, ly=311)
+    s.path("M210,464 L210,691 L390,691")
+    s.path("M600,464 L600,660")
+    s.path("M990,638 L990,691 L810,691", label="执行结果", lx=888, ly=683)
+    s.path("M600,722 L600,748")
+    s.path("M600,722 L210,722 L210,748")
+    s.path("M600,722 L990,722 L990,748")
+    s.text(30, 812, "边界：Agent 可以直接查询和修改暂存区；真正写店铺或执行不可撤回动作，必须经过提案、人工审批和执行器复核。",
+           11, 500, MUTED, "start")
+    return s.render()
+
+
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "architecture.svg").write_text(architecture(), encoding="utf-8")
 (OUT / "data-flow.svg").write_text(flow(), encoding="utf-8")
+(OUT / "workflow.svg").write_text(workflow(), encoding="utf-8")
 print("ok")
